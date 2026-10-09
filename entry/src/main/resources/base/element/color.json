@@ -1,0 +1,44 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#1B1D21"
+    },
+    {
+      "name": "shell_bg",
+      "value": "#1B1D21"
+    },
+    {
+      "name": "panel_bg",
+      "value": "#23262B"
+    },
+    {
+      "name": "panel_bg_hover",
+      "value": "#2E3238"
+    },
+    {
+      "name": "divider",
+      "value": "#34383F"
+    },
+    {
+      "name": "text_primary",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#9AA0A6"
+    },
+    {
+      "name": "accent",
+      "value": "#4C8DFF"
+    },
+    {
+      "name": "accent_soft",
+      "value": "#1F3A66"
+    },
+    {
+      "name": "danger",
+      "value": "#FF6B6B"
+    }
+  ]
+}

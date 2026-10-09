@@ -1,0 +1,290 @@
+diff --git a/crates/engine/src/prefs.rs b/crates/engine/src/prefs.rs
+index 70e3316..4685808 100644
+--- a/crates/engine/src/prefs.rs
++++ b/crates/engine/src/prefs.rs
+@@ -229,7 +229,8 @@ impl Default for Interface {
+             canvas_custom_color: "#282828".into(),
+             canvas_border: CanvasBorder::DropShadow,
+             ui_scale: UiScale::Auto,
+-            language: "auto".into(),
++            // 汉化版：默认使用简体中文（用户仍可在「首选项 › 界面 › 语言」中改回 Auto/English）。
++            language: "zh-hans".into(),
+             ui_font_size: UiFontSize::Small,
+             show_channels_in_color: false,
+             dynamic_color_sliders: true,
+diff --git a/crates/text/src/fonts.rs b/crates/text/src/fonts.rs
+index 3154790..c70082a 100644
+--- a/crates/text/src/fonts.rs
++++ b/crates/text/src/fonts.rs
+@@ -22,6 +22,9 @@ pub static INTER_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Re
+ pub static INTER_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Inter-Medium.ttf");
+ pub static INTER_SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf");
+ pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
++/// Simplified-Chinese fallback (Noto Sans SC, OFL), subset to the UI's own character set so it can
++/// be embedded in the web build, where no system CJK font is reachable.
++pub static NOTO_SANS_SC: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSC-Regular-Subset.ttf");
+ 
+ /// Fonts shipped with Photocraft (OFL; licences in `assets/fonts`).
+ pub static BUNDLED: &[(&str, &[u8])] = &[
+@@ -29,6 +32,7 @@ pub static BUNDLED: &[(&str, &[u8])] = &[
+     ("Inter-Medium.ttf", INTER_MEDIUM),
+     ("Inter-SemiBold.ttf", INTER_SEMIBOLD),
+     ("JetBrainsMono-Regular.ttf", JETBRAINS_MONO_REGULAR),
++    ("NotoSansSC-Regular-Subset.ttf", NOTO_SANS_SC),
+ ];
+ 
+ /// Families tried (if installed) after the requested one, for missing glyphs. The CJK families
+diff --git a/crates/ui-egui/src/gpu_canvas.rs b/crates/ui-egui/src/gpu_canvas.rs
+index 3be1191..a2e45c5 100644
+--- a/crates/ui-egui/src/gpu_canvas.rs
++++ b/crates/ui-egui/src/gpu_canvas.rs
+@@ -123,10 +123,22 @@ impl GpuCanvas {
+         };
+         // Device loss and uncaptured errors mark this flag instead of panicking (#243).
+         let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
+-        let mut res = Resources::new(&rs.device, &rs.queue, rs.target_format, high != HighPolicy::Off);
++        // A pass that reads mip n−1 and writes mip n of the *same* texture is a feedback loop.
++        // WebGPU allows it; OpenGL ES leaves it undefined, and drivers that don't carve out the
++        // level range (ANGLE over Vulkan on mobile, several native GLES stacks) resolve it by
++        // leaving the target unwritten, so the mip chain reads back empty and a zoomed-out canvas
++        // goes transparent while the document itself is fine.
++        //
++        // GL gets the chain built out of place instead: each level is rendered into its own scratch
++        // texture and copied into place, so no pass ever reads the texture it writes. The chain is
++        // also capped (see `GL_MIP_LEVELS`) — every edit rebuilds it, and a full chain costs one
++        // pass plus one copy per level, which is what made brush strokes stutter on mobile GL.
++        let backend = rs.adapter.get_info().backend;
++        let gl_mips = backend == wgpu::Backend::Gl;
++        let mut res = Resources::new(&rs.device, &rs.queue, rs.target_format, high != HighPolicy::Off, gl_mips);
+         res.health = health.clone();
+         rs.renderer.write().callback_resources.insert(res);
+-        log::info!("gpu canvas: target {:?}, max texture {max}, tile {tile}, 16F canvas {high:?}", rs.target_format);
++        log::info!("gpu canvas: target {:?}, max texture {max}, tile {tile}, 16F canvas {high:?}, backend {backend:?}, gl mips {gl_mips} (<= {GL_MIP_LEVELS} levels)", rs.target_format);
+         Self { rs: rs.clone(), tile, high, health }
+     }
+ 
+@@ -1078,6 +1090,12 @@ fn detect_physical_memory() -> Option<u64> {
+ }
+ 
+ struct Resources {
++    /// GL/WebGL2 only: build the mip chain through per-level scratch textures and keep it short
++    /// (see `GL_MIP_LEVELS`). An in-place chain renders mip n while sampling mip n−1 of the *same*
++    /// texture, which is undefined on OpenGL ES — drivers that enforce it leave the target empty
++    /// and a zoomed-out canvas goes transparent. Short keeps the rebuild cheap: every edit pays one
++    /// pass and one copy per level, and a deep chain is what makes brush strokes stutter.
++    gl_mips: bool,
+     view_bgl: wgpu::BindGroupLayout,
+     tile_bgl: wgpu::BindGroupLayout,
+     shadow_pipeline: wgpu::RenderPipeline,
+@@ -1181,6 +1199,13 @@ struct Tile {
+     rect: [u32; 4],
+     texture: wgpu::Texture,
+     levels: Vec<wgpu::TextureView>,
++    /// GL only, one entry per level below the top: entry `i` is a single-level texture sized like
++    /// level `i + 1` (plus its view). Level `n` is rendered into it and then copied into place, so
++    /// no pass ever reads the texture it writes (a feedback loop on GL).
++    mip_src: Vec<(wgpu::Texture, wgpu::TextureView)>,
++    /// One bind group per level below the top, sampling `levels[n - 1]`. Built once: an edit
++    /// rebuilds the chain every stroke, and re-creating them each time is measurable.
++    mip_bg: Vec<wgpu::BindGroup>,
+     bind_group: wgpu::BindGroup,
+     _uniform: wgpu::Buffer,
+ }
+@@ -1246,7 +1271,7 @@ fn pipeline(
+ }
+ 
+ impl Resources {
+-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, target: wgpu::TextureFormat, high: bool) -> Self {
++    fn new(device: &wgpu::Device, queue: &wgpu::Queue, target: wgpu::TextureFormat, high: bool, gl_mips: bool) -> Self {
+         let module =
+             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_canvas"), source: wgpu::ShaderSource::Wgsl(CANVAS_WGSL.into()) });
+         let vis = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
+@@ -1341,6 +1366,7 @@ impl Resources {
+         let encode_pipeline_high = high.then(|| pipeline(device, "pc_encode_16f", &encode_layout, &encode_module, ("vs", "fs"), FORMAT_HIGH, None));
+         let identity_lut = lut_bind_group(device, queue, &lut_bgl, 2, &identity_lut_bytes());
+         Self {
++            gl_mips,
+             lut_bgl,
+             luts: HashMap::new(),
+             display_lut_signatures: HashMap::new(),
+@@ -1384,6 +1410,14 @@ fn mip_count(w: u32, h: u32) -> u32 {
+     32 - w.max(h).max(1).leading_zeros()
+ }
+ 
++/// How many levels a GL tile keeps. Rebuilding the chain costs one render pass plus one
++/// texture-to-texture copy per level (there is no `glCopyImageSubData` in WebGL2, so a copy is a
++/// framebuffer redirect), and every brush stroke triggers a rebuild — a full chain of a 2048 tile
++/// is 11 passes and 11 copies per stroke. Down to 1/8 is still small enough to sample from cache,
++/// and the LOD is clamped to match, so the only cost of stopping here is a little aliasing when
++/// zoomed out past ~12%.
++const GL_MIP_LEVELS: u32 = 4;
++
+ /// A buffer holding `contents`, like `DeviceExt::create_buffer_init` but without its panic when
+ /// the device was lost (an invalid buffer has no mapped range): the buffer is then just invalid.
+ fn init_buffer(device: &wgpu::Device, label: &str, contents: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
+@@ -1404,7 +1438,8 @@ impl DocTextures {
+         for ty in (0..size[1]).step_by(tile as usize) {
+             for tx in (0..size[0]).step_by(tile as usize) {
+                 let (w, h) = (tile.min(size[0] - tx), tile.min(size[1] - ty));
+-                let levels_n = mip_count(w, h);
++                // GL keeps a short chain; see `GL_MIP_LEVELS`.
++                let levels_n = if res.gl_mips { mip_count(w, h).min(GL_MIP_LEVELS) } else { mip_count(w, h) };
+                 let texture = device.create_texture(&wgpu::TextureDescriptor {
+                     label: Some("pc_canvas_tile"),
+                     size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+@@ -1418,10 +1453,44 @@ impl DocTextures {
+                         | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                     view_formats: &[],
+                 });
+-                let levels = (0..levels_n)
++                let levels: Vec<wgpu::TextureView> = (0..levels_n)
+                     .map(|l| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: l, mip_level_count: Some(1), ..Default::default() }))
+                     .collect();
+                 let full = texture.create_view(&wgpu::TextureViewDescriptor::default());
++                // One bind group per level below the top, sampling the level above it. Built once:
++                // an edit rebuilds the chain on every stroke, and re-creating them each time shows
++                // up in the frame time. GL also gets a single-level scratch texture per level (the
++                // chain has to be built out of place there).
++                let (mip_src, mip_bg): (Vec<_>, Vec<_>) = (1..levels_n)
++                    .map(|l| {
++                        let scratch = res.gl_mips.then(|| {
++                            let (mw, mh) = ((w >> l).max(1), (h >> l).max(1));
++                            let staged = device.create_texture(&wgpu::TextureDescriptor {
++                                label: Some("pc_mip_src"),
++                                size: wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
++                                mip_level_count: 1,
++                                sample_count: 1,
++                                dimension: wgpu::TextureDimension::D2,
++                                format,
++                                // Rendered into as the target, then copied into the chain.
++                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++                                view_formats: &[],
++                            });
++                            let view = staged.create_view(&wgpu::TextureViewDescriptor::default());
++                            (staged, view)
++                        });
++                        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
++                            label: Some("pc_mip"),
++                            layout: &res.mip_bgl,
++                            entries: &[
++                                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&levels[l as usize - 1]) },
++                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.mip_sampler) },
++                            ],
++                        });
++                        (scratch, bg)
++                    })
++                    .unzip();
++                let mip_src = mip_src.into_iter().flatten().collect();
+                 let uniform = init_buffer(device, "pc_canvas_tile", &f32_bytes(&[tx as f32, ty as f32, w as f32, h as f32]), wgpu::BufferUsages::UNIFORM);
+                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                     label: Some("pc_canvas_tile"),
+@@ -1431,7 +1500,7 @@ impl DocTextures {
+                         wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                     ],
+                 });
+-                tiles.push(Tile { rect: [tx, ty, w, h], texture, levels, bind_group, _uniform: uniform });
++                tiles.push(Tile { rect: [tx, ty, w, h], texture, levels, mip_src, mip_bg, bind_group, _uniform: uniform });
+             }
+         }
+         Self { size, format, tiles }
+@@ -1479,18 +1548,16 @@ impl DocTextures {
+                 // Damage at this level, padded by one texel for odd-size rounding.
+                 (x0, y0) = ((x0 / 2).saturating_sub(1), (y0 / 2).saturating_sub(1));
+                 (x1, y1) = ((x1.div_ceil(2) + 1).min(lw), (y1.div_ceil(2) + 1).min(lh));
+-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+-                    label: Some("pc_mip"),
+-                    layout: &res.mip_bgl,
+-                    entries: &[
+-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.levels[level - 1]) },
+-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.mip_sampler) },
+-                    ],
+-                });
++                let bg = &t.mip_bg[level - 1];
++                // GL: render into the scratch texture for this level (never into a level of the
++                // texture being sampled, which would be a feedback loop), then copy it into place.
++                // Elsewhere: render straight into the level.
++                let staged = t.mip_src.get(level - 1);
++                let target: &wgpu::TextureView = staged.map_or(&t.levels[level], |(_, view)| view);
+                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                     label: Some("pc_mip"),
+                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+-                        view: &t.levels[level],
++                        view: target,
+                         resolve_target: None,
+                         depth_slice: None,
+                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+@@ -1501,9 +1568,27 @@ impl DocTextures {
+                     multiview_mask: None,
+                 });
+                 pass.set_pipeline(mip_pipeline);
+-                pass.set_bind_group(0, &bg, &[]);
++                pass.set_bind_group(0, bg, &[]);
+                 pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                 pass.draw(0..3, 0..1);
++                drop(pass);
++                if let Some((s, _)) = staged {
++                    encoder.copy_texture_to_texture(
++                        wgpu::TexelCopyTextureInfo {
++                            texture: s,
++                            mip_level: 0,
++                            origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
++                            aspect: wgpu::TextureAspect::All,
++                        },
++                        wgpu::TexelCopyTextureInfo {
++                            texture: &t.texture,
++                            mip_level: level as u32,
++                            origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
++                            aspect: wgpu::TextureAspect::All,
++                        },
++                        wgpu::Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
++                    );
++                }
+             }
+         }
+         queue.submit([encoder.finish()]);
+@@ -1540,10 +1625,12 @@ impl CanvasCallback {
+         ([ox, oy], scale)
+     }
+ 
+-    fn uniforms(&self, screen: [u32; 2], ppp: f32, out_linear: bool, style: &CanvasStyle) -> [f32; VIEW_FLOATS] {
++    fn uniforms(&self, screen: [u32; 2], ppp: f32, out_linear: bool, style: &CanvasStyle, max_lod: f32) -> [f32; VIEW_FLOATS] {
+         let p = &self.params;
+         let (origin, scale) = self.placement(ppp);
+         let (mode, lod) = filter_mode(scale);
++        // GL keeps only `GL_MIP_LEVELS` levels; asking for a deeper one would sample an empty level.
++        let lod = lod.min(max_lod);
+         let grid = if p.pixel_grid && p.zoom >= 8.0 { 0.16 } else { 0.0 };
+         let square = if style.checker_square > 0.0 { (style.checker_square * ppp).round().max(1.0) } else { 0.0 };
+         let (l, d, g) = (style.checker_light, style.checker_dark, style.gamut_color);
+@@ -1598,7 +1685,8 @@ impl CallbackTrait for CanvasCallback {
+         if !res.health.is_ok() {
+             return Vec::new();
+         }
+-        let data = self.uniforms(screen.size_in_pixels, screen.pixels_per_point, res.out_linear, &res.style);
++        let max_lod = if res.gl_mips { (GL_MIP_LEVELS - 1) as f32 } else { f32::MAX };
++        let data = self.uniforms(screen.size_in_pixels, screen.pixels_per_point, res.out_linear, &res.style, max_lod);
+         let (bgl, sampler) = (&res.view_bgl, &res.sampler);
+         let v = res.views.entry(self.params.view_key).or_insert_with(|| {
+             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+diff --git a/crates/ui-egui/src/theme.rs b/crates/ui-egui/src/theme.rs
+index 30eeea3..e51a69c 100644
+--- a/crates/ui-egui/src/theme.rs
++++ b/crates/ui-egui/src/theme.rs
+@@ -333,8 +333,17 @@ pub fn install_fonts_with(ctx: &egui::Context, cjk: crate::cjk_fonts::Sources) {
+     add(&mut fonts, "Inter-Medium", photocraft_text::fonts::INTER_MEDIUM);
+     add(&mut fonts, "Inter-SemiBold", photocraft_text::fonts::INTER_SEMIBOLD);
+     add(&mut fonts, "JetBrainsMono", photocraft_text::fonts::JETBRAINS_MONO_REGULAR);
++    // 汉化版：内嵌简体中文字体子集。Web 版读不到系统字体，没有它界面上的中文会显示成空白，
++    // 所以放在各字族末尾兜底（拉丁字符仍由 Inter / JetBrains Mono 渲染）。
++    add(&mut fonts, "NotoSansSC", photocraft_text::fonts::NOTO_SANS_SC);
+     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Inter".to_owned());
+     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".to_owned());
++    for fam in [FontFamily::Proportional, FontFamily::Monospace] {
++        let stack = fonts.families.entry(fam).or_default();
++        if !stack.iter().any(|n| n == "NotoSansSC") {
++            stack.push("NotoSansSC".to_owned());
++        }
++    }
+     // Named weights fall back to the default stack for missing glyphs.
+     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
+     for (fam, primary) in [("medium", "Inter-Medium"), ("semibold", "Inter-SemiBold")] {

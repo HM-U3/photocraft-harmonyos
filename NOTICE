@@ -1,0 +1,60 @@
+PhotoCraft for HarmonyOS (照片工坊)
+Copyright 2026 PhotoCraft for HarmonyOS contributors
+
+This is an unofficial, non-commercial HarmonyOS client that wraps the
+WebAssembly build of the upstream PhotoCraft editor. It is NOT maintained by,
+affiliated with, or endorsed by the upstream project or ArtCraft.
+
+--------------------------------------------------------------------------
+1. Upstream software
+--------------------------------------------------------------------------
+This product contains a WebAssembly engine built from the source of:
+
+    PhotoCraft — https://github.com/storytold/photocraft
+    Copyright Storytold / ArtCraft
+    Licensed under MIT OR Apache-2.0 (dual license), at the licensee's option.
+
+The engine binaries shipped under
+`entry/src/main/resources/rawfile/photocraft/` were compiled from that source.
+The complete set of local modifications is kept as patch files under
+`tools/build_engine_zh/`:
+
+  - engine-zh.patch    default UI language -> zh-hans; bundle a subsetted
+                       CJK font; append the font to the egui font fallback
+                       chain.
+  - mip-gl-fix.patch   (superseded by view-cache.patch) GL mip generation
+                       read/write feedback loop.
+  - view-cache.patch   remove the document mip chain entirely; add a
+                       screen-sized offscreen ViewCache; blit once per frame.
+  - navigator.patch    stop the navigator thumbnail from re-reducing the whole
+                       document every frame while a stroke is in progress.
+
+--------------------------------------------------------------------------
+2. Bundled font
+--------------------------------------------------------------------------
+Noto Sans SC is used in subsetted form (549 KB / 2348 glyphs, weight 400).
+
+    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/notofonts)
+    Licensed under the SIL Open Font License, Version 1.1.
+    Full license text: tools/build_engine_zh/fonts/LICENSE-NotoSansSC.txt
+
+NOTE / TODO: the OFL's Reserved Font Name clause means a *modified* (here:
+subsetted) version should not be distributed under the name "Noto Sans SC"
+without the copyright holder's permission. The engine currently still
+registers it under that name. Rename it (e.g. to "PhotoCraft Sans SC") before
+publishing a binary release. See README §"许可与署名".
+
+--------------------------------------------------------------------------
+3. Third-party Rust crates inside the .wasm
+--------------------------------------------------------------------------
+The compiled engine statically links a large dependency tree (wgpu, egui,
+naga, image codecs, ...). All of them are permissively licensed (MIT,
+Apache-2.0, BSD, Zlib, OFL); no GPL/AGPL code is included.
+
+An exhaustive, machine-generated list cannot live in this repository because
+the upstream Cargo workspace is not vendored here. To regenerate it, run on a
+machine that has the upstream source checked out:
+
+    cargo about generate --output-file THIRD-PARTY-NOTICES.md
+
+and place the result next to this file before publishing a release.

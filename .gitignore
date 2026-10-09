@@ -1,0 +1,20 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# 签名材料：DevEco 自动签名会把本机绝对路径写进 build-profile.json5，
+# 提交前请跑 tools/check-before-publish.py 自查（见 README「开源前自查」）
+*.p12
+*.cer
+*.p7b
+*.hap
+*.app

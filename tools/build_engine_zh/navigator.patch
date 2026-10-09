@@ -1,0 +1,188 @@
+diff --git a/crates/ui-egui/src/canvas.rs b/crates/ui-egui/src/canvas.rs
+index f2d3a37..ee9c642 100644
+--- a/crates/ui-egui/src/canvas.rs
++++ b/crates/ui-egui/src/canvas.rs
+@@ -481,6 +481,28 @@ fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>
+ pub const NAVIGATOR_SIDE: u32 = 512;
+ /// How long adjustment-dialog settings must stay unchanged before the navigator shows them.
+ const NAVIGATOR_SETTLE_MS: f64 = 200.0;
++/// A full reduction of a document at least this large is logged. The panel's own cost cannot be
++/// timed on wasm — [`crate::gpu_canvas::now_ms`] is a stub there, so `Perf::span` reads 0 — but the
++/// work itself is what a device log can show, and a full reduction of a big document is the
++/// expensive case this function exists to keep off the editing path.
++const NAVIGATOR_LOG_PIXELS: u64 = 4 << 20;
++
++/// The Navigator panel's image and the keys it was reduced from. The keys mirror [`CanvasCache`],
++/// so an edit that only touched a rectangle can refresh through
++/// [`photocraft_compose::render_reduced_damage`] instead of compositing the whole document again.
++#[derive(Clone)]
++struct NavigatorCache {
++    /// The document object the image was built from (`display_doc`'s snapshot). Documents are
++    /// copy-on-write, so a different pointer means the pixels may have changed, while a change
++    /// that touches none (selecting a layer) leaves it alone.
++    snapshot: std::sync::Weak<Document>,
++    /// Preview key with the colour display's key folded in: what the image shows.
++    shown: u64,
++    tex: egui::TextureHandle,
++    /// `DocState::revision` and preview key (display key folded in) the image was reduced at, for
++    /// [`damage_since`].
++    at: (u64, u64),
++}
+ 
+ /// The Navigator panel's image of document `idx`. With the CPU canvas that is the canvas texture
+ /// itself; with the GPU canvas a thumbnail cached per revision, so an edit to a huge document
+@@ -489,49 +511,103 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
+     if app.gpu.is_none() {
+         return ensure_texture(app, ctx, idx).map(|(t, _)| t);
+     }
+-    // Keyed by the document snapshot, not its revision: selecting a layer changes no pixels.
+-    let (snapshot, id) = app.session.documents().get(idx).map(|st| (std::sync::Arc::downgrade(&st.doc), st.doc.id))?;
++    let (snapshot, revision, last_damage, id) = {
++        let st = app.session.documents().get(idx)?;
++        let last = st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
++        (std::sync::Arc::downgrade(&st.doc), st.revision, last, st.doc.id)
++    };
+     let (doc, preview_key) = display_doc(app, idx);
+     let (display, display_key) = canvas_display(app, &doc);
+-    let preview_key = preview_key ^ display_key;
++    let shown = preview_key ^ display_key;
+     let key = egui::Id::new(("navigator", id.0));
+-    type Cached = (std::sync::Weak<Document>, u64, egui::TextureHandle);
+-    let cached: Option<Cached> = ctx.data(|d| d.get_temp(key));
+-    if let Some((r, p, t)) = &cached
+-        && r.ptr_eq(&snapshot)
+-        && *p == preview_key
+-    {
+-        return Some(t.id());
+-    }
+-    // While a Move or Patch drag is under way the navigator keeps its image and catches up on release.
+-    if let Some((_, _, t)) = &cached
+-        && (crate::move_ui::showing(app) || crate::patch_preview::showing(app))
++    let cached: Option<NavigatorCache> = ctx.data(|d| d.get_temp(key));
++    // Keyed by the document snapshot, not its revision: selecting a layer changes no pixels.
++    if let Some(c) = &cached
++        && c.snapshot.ptr_eq(&snapshot)
++        && c.shown == shown
+     {
+-        return Some(t.id());
++        return Some(c.tex.id());
+     }
+     // While an adjustment dialog's settings are changing, the navigator keeps its image and
+     // catches up once they settle (a thumbnail composite per change would cost more than the canvas).
+-    if let Some((r, _, t)) = &cached
+-        && r.ptr_eq(&snapshot)
++    if let Some(c) = &cached
++        && c.snapshot.ptr_eq(&snapshot)
+         && crate::adjust_preview::settling(app, NAVIGATOR_SETTLE_MS)
+     {
+         ctx.request_repaint_after(std::time::Duration::from_millis(NAVIGATOR_SETTLE_MS as u64));
+-        return Some(t.id());
++        return Some(c.tex.id());
++    }
++    // While a Move or Patch drag is under way the navigator keeps its image and catches up on
++    // release, and so does every other canvas gesture. A brush stroke redraws the document many
++    // times a second, and each of those redraws would reduce the whole document again: the panel
++    // is a reference view, not something read mid-stroke, and it is the single most expensive
++    // thing a stroke did on a large document (about 150 ms a frame for a 6.5 MP image, measured,
++    // while the canvas itself kept up). It catches up on release, through the damage rect below.
++    if let Some(c) = &cached
++        && (app.drag.is_some() || crate::move_ui::showing(app) || crate::patch_preview::showing(app))
++    {
++        return Some(c.tex.id());
++    }
++    // What changed since the image was reduced, when only a rectangle did: the stroke a gesture
++    // just committed, the layers a drag moved, the area a Patch healed. Reducing that rectangle
++    // costs a fraction of the document.
++    let damage = cached.as_ref().and_then(|c| damage_since(app, idx, c.at, (revision, preview_key), display_key, last_damage));
++    // An empty damage rect says the pixels did not change (an edit that only reordered layers):
++    // nothing to redraw, but the keys still have to advance, as `ensure_texture` does.
++    if let Some(c) = &cached
++        && damage.is_some_and(|d| d.is_empty())
++    {
++        ctx.data_mut(|d| d.insert_temp(key, NavigatorCache { snapshot: snapshot.clone(), shown, tex: c.tex.clone(), at: (revision, shown) }));
++        return Some(c.tex.id());
+     }
+     let t0 = crate::gpu_canvas::now_ms();
+-    let image = display_image(display.as_deref(), &photocraft_compose::thumbnail_buffer(&doc, NAVIGATOR_SIDE));
+-    let tex = match cached {
+-        Some((_, _, mut t)) => {
+-            t.set(image, TextureOptions::LINEAR);
+-            t
+-        }
+-        None => ctx.load_texture(format!("navigator-{}", id.0), image, TextureOptions::LINEAR),
+-    };
+-    app.perf.span("navigator", crate::gpu_canvas::now_ms() - t0);
+-    ctx.data_mut(|d| d.insert_temp(key, (snapshot, preview_key, tex.clone())));
++    let opts = TextureOptions::LINEAR;
++    let [w, h] = navigator_size(&doc);
++    let mut tex = cached.map(|c| c.tex);
++    let mut partial = false;
++    // `render_reduced_damage` gives the pixels the whole reduction would, so patching the image in
++    // place is exact — as long as the full path below would have reduced the document itself and
++    // not a proxy of it, or the two would disagree.
++    if let (Some(t), Some(d)) = (tex.as_mut(), damage)
++        && t.size() == [w as usize, h as usize]
++        && doc.size.area() <= photocraft_compose::PROXY_THUMBNAIL_PIXELS
++    {
++        let buf = photocraft_compose::render_reduced_damage(&doc, w, h, d);
++        if !buf.rect.is_empty() {
++            t.set_partial([buf.rect.x0 as usize, buf.rect.y0 as usize], display_image(display.as_deref(), &buf), opts);
++            partial = true;
++        }
++    }
++    if !partial {
++        let image = display_image(display.as_deref(), &photocraft_compose::thumbnail_buffer(&doc, NAVIGATOR_SIDE));
++        tex = Some(match tex {
++            Some(mut t) if t.size() == image.size => {
++                t.set(image, opts);
++                t
++            }
++            _ => ctx.load_texture(format!("navigator-{}", id.0), image, opts),
++        });
++    }
++    let tex = tex.expect("set just above");
++    let ms = crate::gpu_canvas::now_ms() - t0;
++    app.perf.span("navigator", ms);
++    if !partial && doc.size.area() >= NAVIGATOR_LOG_PIXELS {
++        log::info!("navigator: full reduction of {}×{} px", doc.size.width, doc.size.height);
++    }
++    ctx.data_mut(|d| d.insert_temp(key, NavigatorCache { snapshot, shown, tex: tex.clone(), at: (revision, shown) }));
+     Some(tex.id())
+ }
+ 
++/// The pixel size of the Navigator's reduction of `doc` (longer side [`NAVIGATOR_SIDE`]; the
++/// document is never enlarged). Matches what [`photocraft_compose::thumbnail_buffer`] produces, so
++/// a damage patch lands on the pixels it names.
++fn navigator_size(doc: &Document) -> [u32; 2] {
++    let b = doc.bounds();
++    let longest = b.width().max(b.height()).max(1);
++    let scale = (NAVIGATOR_SIDE as f32 / longest as f32).min(1.0);
++    [((b.width() as f32 * scale).round() as u32).max(1), ((b.height() as f32 * scale).round() as u32).max(1)]
++}
++
+ /// Make sure the canvas texture for document `idx` is current; returns (texture id, scale).
+ pub fn ensure_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize) -> Option<(egui::TextureId, f32)> {
+     let (revision, last_damage, id) = {
+@@ -2602,6 +2678,22 @@ mod tests {
+         assert_ne!(start_screen_drop_hint(true), start_screen_drop_hint(false));
+     }
+ 
++    /// The Navigator patches its image in place with [`photocraft_compose::render_reduced_damage`],
++    /// which names output pixels of the reduction `navigator_size` is supposed to describe. If the
++    /// two ever disagree the patch lands on the wrong pixels, so hold them together here.
++    #[test]
++    fn navigator_size_describes_the_reduction_it_patches() {
++        for (w, h) in [(8_u32, 8_u32), (3120, 2080), (400, 4000), (1, 700), (4096, 4096)] {
++            let mut s = photocraft_engine::Session::new();
++            s.execute("file.new", serde_json::json!({"width": w, "height": h, "name": "N"})).unwrap();
++            let doc = s.active().unwrap().doc.clone();
++            let [nw, nh] = navigator_size(&doc);
++            let reduced = photocraft_compose::thumbnail_buffer(&doc, NAVIGATOR_SIDE).rect;
++            assert_eq!([reduced.width(), reduced.height()], [nw, nh], "{w}×{h}");
++            assert!(nw.max(nh) <= NAVIGATOR_SIDE && nw >= 1 && nh >= 1, "{w}×{h} → {nw}×{nh}");
++        }
++    }
++
+     #[test]
+     fn pointer_moves_are_bounded_by_the_press_and_release() {
+         use egui::{Event, PointerButton, pos2};

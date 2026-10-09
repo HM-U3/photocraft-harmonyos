@@ -1,0 +1,6 @@
+{
+  "modelVersion": "6.1.0",
+  "description": "PhotoCraft for HarmonyOS - 基于开源 PhotoCraft Web 版（Rust / WebAssembly）构建的鸿蒙客户端",
+  "dependencies": {},
+  "devDependencies": {}
+}

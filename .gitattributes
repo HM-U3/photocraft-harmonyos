@@ -1,0 +1,34 @@
+# ---- 大二进制走 Git LFS，仓库本体保持轻量 ----
+# 需要先：git lfs install
+*.wasm            filter=lfs diff=lfs merge=lfs -text
+*.hap             filter=lfs diff=lfs merge=lfs -text
+*.app             filter=lfs diff=lfs merge=lfs -text
+
+# ---- 图片按二进制处理，禁止换行符转换 ----
+*.png             binary
+*.jpg             binary
+*.jpeg            binary
+*.ico             binary
+
+# ---- 脚本与源码统一 LF ----
+# 本工程在 Windows 上开发，build.sh 若被写成 CRLF，Linux/macOS 上 clone 后执行会报
+# `bad interpreter: /bin/bash^M`。这几行强制以 LF 入库、检出时也是 LF。
+*.sh              text eol=lf
+*.py              text eol=lf
+*.md              text eol=lf
+*.ets             text eol=lf
+*.ts              text eol=lf
+*.json5           text eol=lf
+*.json            text eol=lf
+*.html            text eol=lf
+*.js              text eol=lf
+*.patch           text eol=lf
+*.txt             text eol=lf
+*.svg             text eol=lf
+*.gitattributes   text eol=lf
+*.gitignore       text eol=lf
+
+# ---- 兜底：其余文本文件也统一 LF ----
+# Windows 上 Git 安装器默认 core.autocrlf=true，不写这条的话没匹配到的文件
+# 会被写成 CRLF 再入库。放在最后，前面更具体的规则优先。
+*                 text=auto eol=lf

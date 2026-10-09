@@ -1,0 +1,20 @@
+{
+  "float": [
+    {
+      "name": "sidebar_width",
+      "value": "72vp"
+    },
+    {
+      "name": "sidebar_width_expanded",
+      "value": "220vp"
+    },
+    {
+      "name": "topbar_height",
+      "value": "48vp"
+    },
+    {
+      "name": "bottombar_height",
+      "value": "56vp"
+    }
+  ]
+}
