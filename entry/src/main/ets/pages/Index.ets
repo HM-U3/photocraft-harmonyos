@@ -436,7 +436,7 @@ struct Index {
             this.sidebarExpanded = !this.sidebarExpanded;
           })
         if (this.sidebarExpanded) {
-          Text('v1.0.0 · 引擎 0.3.0')
+          Text('v1.0.1 · 引擎 0.3.0')
             .fontSize(10)
             .fontColor($r('app.color.text_secondary'))
             .margin({ left: 16, top: 4, bottom: 12 })
@@ -745,7 +745,7 @@ struct Index {
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .margin({ top: 14 })
-        Text('v1.0.0 · PhotoCraft 0.3.0 引擎')
+        Text('v1.0.1 · PhotoCraft 0.3.0 引擎')
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))
           .margin({ top: 4 })

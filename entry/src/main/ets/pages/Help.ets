@@ -98,7 +98,7 @@ struct Help {
           ])
 
           this.Section('版本与许可', [
-            '客户端版本：1.0.0',
+            '客户端版本：1.0.1',
             '编辑引擎：PhotoCraft 0.3.0（上游 main 分支源码重新编译，WebAssembly，MIT / Apache-2.0 双许可）',
             '引擎改动：默认加载官方简体中文语言包；内嵌 Noto Sans SC 子集字体（OFL 1.1）；' +
               '并修复了 WebGL2 下缩小画面变透明的缺陷',
