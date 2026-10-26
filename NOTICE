@@ -1,59 +1,65 @@
-PhotoCraft for HarmonyOS (照片工坊)
+PhotoCraft for HarmonyOS (照片工坊 / 雕光)
 Copyright 2026 PhotoCraft for HarmonyOS contributors
 
-This is an unofficial, non-commercial HarmonyOS client that wraps the
-WebAssembly build of the upstream PhotoCraft editor. It is NOT maintained by,
-affiliated with, or endorsed by the upstream project or ArtCraft.
+This is an unofficial, non-commercial HarmonyOS port of the upstream
+PhotoCraft editor. It is NOT maintained by, affiliated with, or endorsed by
+the upstream project or ArtCraft.
 
 --------------------------------------------------------------------------
 1. Upstream software
 --------------------------------------------------------------------------
-This product contains a WebAssembly engine built from the source of:
+This product contains a native engine compiled from the source of:
 
     PhotoCraft — https://github.com/storytold/photocraft
     Copyright Storytold / ArtCraft
     Licensed under MIT OR Apache-2.0 (dual license), at the licensee's option.
 
-The engine binaries shipped under
-`entry/src/main/resources/rawfile/photocraft/` were compiled from that source.
-The complete set of local modifications is kept as patch files under
-`tools/build_engine_zh/`:
+The engine binary (`libphotocraft_native.so`, `aarch64-unknown-linux-ohos`)
+was compiled from that source plus the HarmonyOS port. The port adds, and
+does not otherwise rewrite, the following:
 
-  - engine-zh.patch    default UI language -> zh-hans; bundle a subsetted
-                       CJK font; append the font to the egui font fallback
-                       chain.
-  - mip-gl-fix.patch   (superseded by view-cache.patch) GL mip generation
-                       read/write feedback loop.
-  - view-cache.patch   remove the document mip chain entirely; add a
-                       screen-sized offscreen ViewCache; blit once per frame.
-  - navigator.patch    stop the navigator thumbnail from re-reducing the whole
-                       document every frame while a stroke is in progress.
+  - `apps/photocraft-ohos` — a NAPI host crate: render thread on an
+    OHNativeWindow surface (wgpu, GLES/EGL backend), input and platform
+    request queues, system CJK font registration.
+  - `crates/ui-egui` — made buildable without `eframe`, so the host drives
+    `run_ui` itself instead of `eframe` owning a window and event loop.
+  - Platform service implementations (file open/save, external links) that
+    forward to ArkTS instead of a desktop dialog.
 
---------------------------------------------------------------------------
-2. Bundled font
---------------------------------------------------------------------------
-Noto Sans SC is used in subsetted form (549 KB / 2348 glyphs, weight 400).
-
-    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/notofonts)
-    Licensed under the SIL Open Font License, Version 1.1.
-    Full license text: tools/build_engine_zh/fonts/LICENSE-NotoSansSC.txt
-
-NOTE / TODO: the OFL's Reserved Font Name clause means a *modified* (here:
-subsetted) version should not be distributed under the name "Noto Sans SC"
-without the copyright holder's permission. The engine currently still
-registers it under that name. Rename it (e.g. to "PhotoCraft Sans SC") before
-publishing a binary release. See README §"许可与署名".
+Upstream's own `zh-hans` translation table is used as-is; no upstream
+strings were modified for this port.
 
 --------------------------------------------------------------------------
-3. Third-party Rust crates inside the .wasm
+2. Fonts
+--------------------------------------------------------------------------
+No font is bundled or redistributed by this project.
+
+Chinese glyphs are rendered with the device's system font, which the host
+registers as the lowest-priority fallback family after probing:
+
+    /system/fonts/HarmonyOS_Sans_SC.ttf
+    /system/fonts/NotoSansCJK-Regular.ttc
+    /system/fonts/NotoSansSC-Regular.otf
+
+Those fonts are provided by HarmonyOS and remain under their own licenses
+(HarmonyOS Sans is distributed with the system; Noto CJK is OFL 1.1).
+This repository does not ship a copy of either.
+
+(The 1.x WebAssembly build embedded a subset of Noto Sans SC. That build,
+its font, and the OFL Reserved-Font-Name caveat that came with it are no
+longer part of this project; the historical recipe is archived under
+`tools/build_engine_zh/`.)
+
+--------------------------------------------------------------------------
+3. Third-party Rust crates inside the .so
 --------------------------------------------------------------------------
 The compiled engine statically links a large dependency tree (wgpu, egui,
 naga, image codecs, ...). All of them are permissively licensed (MIT,
-Apache-2.0, BSD, Zlib, OFL); no GPL/AGPL code is included.
+Apache-2.0, BSD, Zlib); no GPL/AGPL code is included.
 
 An exhaustive, machine-generated list cannot live in this repository because
-the upstream Cargo workspace is not vendored here. To regenerate it, run on a
-machine that has the upstream source checked out:
+the upstream Cargo workspace is neither vendored nor redistributed here. To
+regenerate it, run on a machine that has the upstream source checked out:
 
     cargo about generate --output-file THIRD-PARTY-NOTICES.md
 

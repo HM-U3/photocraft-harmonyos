@@ -1,4 +1,10 @@
-# 中文引擎重编译配方
+# 中文引擎重编译配方（1.x 存档 · 已不适用）
+
+> **这是历史存档，请勿照做。** 2.0 起引擎改为原生 `libphotocraft_native.so`
+> （见 [`../build_engine_native/`](../build_engine_native/)），本目录的 wasm 补丁、
+> 字体子集与 wasm-bindgen 流程全部不再使用；保留它只是为了说明 1.x 当时怎么做的。
+> 其中 `view-cache.patch` / `mip-gl-fix.patch` / `navigator.patch` 描述的三处改动，
+> 上游 0.37 已经自带，因此连补丁都不再需要。
 
 `entry/src/main/resources/rawfile/photocraft/` 里的 `.wasm` / `.js` **不是**上游发布包里的原文件，
 而是从上游 Rust 源码重新编译出来的中文版本。这份配方记录了完整过程，方便以后升级引擎版本时重跑。

@@ -159,7 +159,6 @@ struct NativeRender {
       dy = 0;
       dx = 0;
     }
-    console.info('[PhotoCraft] onAxis action=' + event.action + ' dx=' + dx + ' dy=' + dy);
     // 一次滚动 = BEGIN … UPDATE … END。数值可能只出现在 UPDATE 上，也可能只在 END 上
     // （慢速滚动时系统就只在段尾报一次）。已经报过数值的段里，END 若重复同一个数值就跳过，
     // 免得一格算两次；整段没有任何数值时，END 的那一下就是全部。
