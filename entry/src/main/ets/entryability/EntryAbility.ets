@@ -31,11 +31,19 @@ export default class EntryAbility extends UIAbility {
     }
     AppStorage.setOrCreate(AppConstants.KEY_DEVICE_TYPE, type);
     console.info('[PhotoCraft] deviceType=' + type);
+
+    // 原生渲染页需要沙箱目录（偏好、导出都写在里面）。
+    try {
+      AppStorage.setOrCreate('pc_files_dir', this.context.filesDir);
+      console.info('[PhotoCraft] filesDir=' + this.context.filesDir);
+    } catch (err) {
+      console.error('[PhotoCraft] 读取 filesDir 失败: ' + JSON.stringify(err));
+    }
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     console.info('[PhotoCraft] onWindowStageCreate');
-    windowStage.loadContent('pages/Index', (err: BusinessError) => {
+    windowStage.loadContent('pages/NativeRender', (err: BusinessError) => {
       if (err && err.code !== 0) {
         console.error('[PhotoCraft] 加载页面失败: ' + JSON.stringify(err));
         return;

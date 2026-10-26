@@ -1,8 +1,7 @@
-# ---- 大二进制走 Git LFS，仓库本体保持轻量 ----
-# 需要先：git lfs install
-*.wasm            filter=lfs diff=lfs merge=lfs -text
-*.hap             filter=lfs diff=lfs merge=lfs -text
-*.app             filter=lfs diff=lfs merge=lfs -text
+# ---- 大二进制不进版本库 ----
+# 引擎是本机现编的原生库（entry/libs/arm64-v8a/libphotocraft_native.so，约 74 MB），
+# 已由 .gitignore 排除；clone 后跑 tools/build_engine_zh/build.sh 自己编。
+# 因此本仓库不再需要 Git LFS。
 
 # ---- 图片按二进制处理，禁止换行符转换 ----
 *.png             binary

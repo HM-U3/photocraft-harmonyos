@@ -84,7 +84,7 @@ export RUSTC="$TC/bin/rustc.exe"
 ```bash
 git clone --depth 1 https://github.com/storytold/photocraft.git D:/pcbuild/photocraft
 cd /d/pcbuild/photocraft
-git apply <仓库根目录>/tools/build_engine_zh/engine-zh.patch
+git apply <鸿蒙工程>/tools/build_engine_zh/engine-zh.patch
 ```
 
 补丁做四件事（详见补丁文件内的注释）：
@@ -190,7 +190,7 @@ wasm-opt -Oz /d/pcbuild/out/photocraft-web_bg.wasm -o /d/pcbuild/out/photocraft-
 `build.sh` 的输出目录里已经有三个最终文件，直接拷进 rawfile：
 
 ```bash
-RAW=<仓库根目录>/entry/src/main/resources/rawfile/photocraft
+RAW=<鸿蒙工程>/entry/src/main/resources/rawfile/photocraft
 cp "$OUT/photocraft-web-zh.js"           "$RAW/photocraft-web-zh.js"
 cp "$OUT/photocraft-web-zh.classic.js"   "$RAW/photocraft-web-zh.classic.js"
 cp "$OUT/photocraft-web-zh_bg.wasm"      "$RAW/photocraft-web-zh_bg.wasm"
@@ -259,7 +259,7 @@ WebGL2RenderingContext.prototype.copyTexSubImage2D = function (t, level) {
 最后回到工程根目录重新打包：
 
 ```bash
-cd <仓库根目录>
+cd <鸿蒙工程根目录>
 export DEVECO_SDK_HOME="D:\\DevEco Studio\\sdk"
 export JAVA_HOME="D:\\DevEco Studio\\jbr"
 export PATH="/d/DevEco Studio/jbr/bin:$PATH"

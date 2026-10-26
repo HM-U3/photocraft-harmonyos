@@ -1,0 +1,286 @@
+diff --git a/apps/photocraft-cli/tests/cli.rs b/apps/photocraft-cli/tests/cli.rs
+index 90d5966..c05e196 100644
+--- a/apps/photocraft-cli/tests/cli.rs
++++ b/apps/photocraft-cli/tests/cli.rs
+@@ -160,7 +160,7 @@ fn info_and_convert_report_decode_warnings() {
+     let cases = [
+         ("whole.jpg", &jpeg[..], None),
+         ("half.jpg", &jpeg[..jpeg.len() / 2], Some("JPEG data ends early (the file is truncated or damaged); part of the image is missing")),
+-        ("anim.gif", &gif[..], Some("only the first of 3 frames was imported")),
++        ("anim.gif", &gif[..], Some("imported all 3 frames of the GIF as layers Frame 1..3 (0.03s per loop); only Frame 1 is visible, switch layers to see the others")),
+     ];
+     for (name, bytes, warning) in cases {
+         let file = d.join(name);
+diff --git a/crates/automation/tests/mcp.rs b/crates/automation/tests/mcp.rs
+index 20eb836..6fd979e 100644
+--- a/crates/automation/tests/mcp.rs
++++ b/crates/automation/tests/mcp.rs
+@@ -304,7 +304,7 @@ async fn open_reports_decode_warnings() {
+     let warnings = async |path: &str| json_of(&call(&client, "doc_open", json!({"path": path})).await)["warnings"].clone();
+     assert_eq!(warnings("whole.jpg").await, json!([]));
+     assert_eq!(warnings("cut.jpg").await, json!(["JPEG data ends early (the file is truncated or damaged); part of the image is missing"]));
+-    assert_eq!(warnings("anim.gif").await, json!(["only the first of 2 frames was imported"]));
++    assert_eq!(warnings("anim.gif").await, json!(["imported all 2 frames of the GIF as layers Frame 1..2 (0.02s per loop); only Frame 1 is visible, switch layers to see the others"]));
+     client.cancel().await.unwrap();
+     cleanup(&dir);
+ }
+diff --git a/crates/codecs/src/codecs/via_image.rs b/crates/codecs/src/codecs/via_image.rs
+index eca2fbb..3525ba9 100644
+--- a/crates/codecs/src/codecs/via_image.rs
++++ b/crates/codecs/src/codecs/via_image.rs
+@@ -3,13 +3,14 @@
+ 
+ use std::io::Cursor;
+ 
+-use image::{DynamicImage, ImageDecoder, ImageFormat};
++use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat};
+ 
+ use crate::Format;
+ use crate::error::CodecError;
+ use crate::fidelity::Plan;
+ use crate::image::{ChannelLayout, DecodeWarning, Image, SampleType};
+ use crate::options::{EncodeOptions, Limits};
++use crate::GifFrames;
+ 
+ fn image_format(f: Format) -> Option<ImageFormat> {
+     Some(match f {
+@@ -92,6 +93,50 @@ fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
+     (frames > 1).then_some(DecodeWarning::MoreFrames { total })
+ }
+ 
++/// Every frame of an animated GIF, composited the way a viewer draws them.
++///
++/// `image`'s GIF reader applies each frame's disposal method over the previous one, so each
++/// entry here is a full-canvas RGBA8 image rather than the file's partial, delta-encoded one.
++pub(crate) fn decode_gif_frames(bytes: &[u8], limits: &Limits) -> Result<GifFrames, CodecError> {
++    // Two passes over the header: the animation reader owns the reader it is built from, so the
++    // colour profile and EXIF (which live in the same header blocks) are read separately.
++    let mut head = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Gif);
++    let mut hl = image::Limits::default();
++    hl.max_image_width = Some(limits.max_width);
++    hl.max_image_height = Some(limits.max_height);
++    hl.max_alloc = Some(limits.max_alloc);
++    head.limits(hl);
++    let mut hd = head.into_decoder().map_err(|e| map_err(Format::Gif, e))?;
++    let (w, h) = hd.dimensions();
++    limits.check_bytes(w, h, ChannelLayout::Rgba.channels() as u64)?;
++    let mut icc = hd.icc_profile().ok().flatten();
++    let mut exif = hd.exif_metadata().ok().flatten();
++
++    let dec = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).map_err(|e| map_err(Format::Gif, e))?;
++    let mut images = Vec::new();
++    let mut delays_ms = Vec::new();
++    for frame in dec.into_frames() {
++        let frame = frame.map_err(|e| map_err(Format::Gif, e))?;
++        let (num, denom) = frame.delay().numer_denom_ms();
++        // GIF stores tenths of a millisecond; a 0 delay means "as fast as the viewer allows".
++        delays_ms.push((num / denom.max(1)).max(10));
++        let (fw, fh) = (frame.buffer().width(), frame.buffer().height());
++        if (fw, fh) != (w, h) {
++            return Err(CodecError::InvalidImage(format!("frame {fw}x{fh} does not match the canvas {w}x{h}")));
++        }
++        let mut img = Image::from_raw(fw, fh, ChannelLayout::Rgba, SampleType::U8, frame.into_buffer().into_raw())?;
++        if images.is_empty() {
++            // The profile and EXIF belong to the file, not to a frame: keep them on the first one.
++            img = img.with_icc(icc.take()).with_meta(crate::Metadata { exif: exif.take(), xmp: None, dpi: None, text: Vec::new() });
++        }
++        images.push(img);
++    }
++    if images.is_empty() {
++        return Err(CodecError::InvalidImage("the GIF holds no frames".into()));
++    }
++    Ok(GifFrames { images, delays_ms })
++}
++
+ pub(crate) fn from_dynamic(f: Format, d: DynamicImage) -> Result<Image, CodecError> {
+     let (w, h) = (d.width(), d.height());
+     Ok(match d {
+diff --git a/crates/codecs/src/lib.rs b/crates/codecs/src/lib.rs
+index f63340f..0039bed 100644
+--- a/crates/codecs/src/lib.rs
++++ b/crates/codecs/src/lib.rs
+@@ -33,6 +33,46 @@ pub use half::f16;
+ 
+ use crate::codecs::{exr, jpeg, png, pnm, tiff, via_image, webp};
+ 
++/// Every frame of an animated GIF, in order, with how long each one is shown.
++///
++/// Unlike [`decode`], which keeps the first frame only, this walks the whole animation. Each
++/// frame is a full-canvas RGBA8 image: the reader applies the file's disposal methods, so what
++/// comes back is what a viewer would draw, not the partial frames the file stores.
++#[derive(Debug, Clone)]
++pub struct GifFrames {
++    /// Composited frames, `len() >= 1`, all the same size.
++    pub images: Vec<Image>,
++    /// Display time of each frame in milliseconds, parallel to [`GifFrames::images`].
++    pub delays_ms: Vec<u32>,
++}
++
++impl GifFrames {
++    /// Number of frames.
++    pub fn len(&self) -> usize {
++        self.images.len()
++    }
++
++    /// `true` for a single-frame GIF (not an animation).
++    pub fn is_empty(&self) -> bool {
++        self.images.is_empty()
++    }
++
++    /// Total running time of one loop, in milliseconds.
++    pub fn duration_ms(&self) -> u64 {
++        self.delays_ms.iter().map(|&d| u64::from(d)).sum()
++    }
++}
++
++/// Decodes an animated GIF with default [`Limits`].
++pub fn decode_gif_frames(bytes: &[u8]) -> Result<GifFrames, CodecError> {
++    decode_gif_frames_with(bytes, &DecodeOptions::default())
++}
++
++/// Decodes an animated GIF. Fails with [`CodecError::UnknownFormat`] when `bytes` is not a GIF.
++pub fn decode_gif_frames_with(bytes: &[u8], opts: &DecodeOptions) -> Result<GifFrames, CodecError> {
++    via_image::decode_gif_frames(bytes, &opts.limits)
++}
++
+ /// Detect the format and decode with default [`Limits`].
+ pub fn decode(bytes: &[u8]) -> Result<Image, CodecError> {
+     decode_with(bytes, &DecodeOptions::default())
+diff --git a/crates/io/src/flat.rs b/crates/io/src/flat.rs
+index 5f9bab6..1048622 100644
+--- a/crates/io/src/flat.rs
++++ b/crates/io/src/flat.rs
+@@ -26,6 +26,58 @@ pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
+     Ok(r)
+ }
+ 
++/// Most frames an animated GIF is imported with; past this only the first frame is kept.
++pub const GIF_MAX_FRAMES: usize = 200;
++/// Most pixels one imported GIF may hold across all of its frames. Frames are RGBA8 (4 bytes per
++/// pixel) and stored as tiles, so 32 Mpx is 128 MB of pixels before empty tiles are pruned.
++const GIF_MAX_TOTAL_PIXELS: u64 = 32 << 20;
++
++/// Decodes an animated GIF into one layer per frame (`Frame 1` … `Frame N`).
++///
++/// Only the first frame starts out visible: the document then looks exactly like the still image
++/// the single-frame decoder produced, while the rest of the animation sits in the layers panel to
++/// be edited. Still GIFs and ones over [`GIF_MAX_FRAMES`] / [`GIF_MAX_TOTAL_PIXELS`] fall back to
++/// [`import_flat`], which keeps the first frame and reports the frames it left out.
++pub fn import_gif_frames(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
++    // A damaged or unusual animation is still worth opening as a still.
++    let Ok(frames) = codecs::decode_gif_frames(bytes) else { return import_flat(name, bytes) };
++    let n = frames.len();
++    if n <= 1 {
++        return import_flat(name, bytes);
++    }
++    let (w, h) = frames.images[0].dimensions();
++    let pixels = u64::from(w) * u64::from(h) * n as u64;
++    if n > GIF_MAX_FRAMES || pixels > GIF_MAX_TOTAL_PIXELS {
++        let mut r = import_flat(name, bytes)?;
++        r.warnings.push(format!(
++            "the animation's {n} frames hold {pixels} pixels in total, over the {GIF_MAX_TOTAL_PIXELS} budget for importing frames as layers"
++        ));
++        return Ok(r);
++    }
++    let mode = ColorMode::Rgb;
++    let depth = SampleType::U8;
++    let mut doc = Document::new(name, Size::new(w, h), mode, depth);
++    let fmt = PixelFormat::new(mode, depth, true);
++    for (i, img) in frames.images.iter().enumerate() {
++        let mut s = Surface::new(fmt);
++        s.write_interleaved(Rect::new(0, 0, w as i32, h as i32), img.data());
++        s.prune();
++        let mut layer = Layer::new(format!("Frame {}", i + 1), LayerContent::Raster(s));
++        // Every frame visible at once would composite the whole animation into one still.
++        layer.visible = i == 0;
++        doc.layers.push(layer);
++    }
++    doc.icc_profile = frames.images[0].icc.clone().map(Arc::new);
++    doc.metadata.exif = frames.images[0].meta.exif.clone().map(Arc::new);
++    let secs = frames.duration_ms() as f64 / 1000.0;
++    Ok(ImportResult {
++        document: doc,
++        warnings: vec![format!(
++            "imported all {n} frames of the GIF as layers Frame 1..{n} ({secs:.2}s per loop); only Frame 1 is visible, switch layers to see the others"
++        )],
++    })
++}
++
+ /// A decoded flat image as a single-layer document.
+ pub(crate) fn image_to_document(name: &str, img: &Image) -> Result<ImportResult, IoError> {
+     // What the decoder noticed (frames or pages left out, data ending early) comes first.
+@@ -214,6 +266,51 @@ pub fn document_to_image(doc: &Document, warnings: &mut Vec<String>) -> Result<I
+     Ok(img.with_icc(icc).with_meta(meta))
+ }
+ 
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// A 1x1 GIF89a holding `n` frames (as `apps/photocraft-cli/tests/cli.rs` builds one).
++    fn tiny_gif(n: usize) -> Vec<u8> {
++        let mut gif = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xFF\xFF\xFF".to_vec();
++        for _ in 0..n {
++            gif.extend_from_slice(b"\x2C\0\0\0\0\x01\0\x01\0\0\x02\x02\x44\x01\0");
++        }
++        gif.push(0x3B);
++        gif
++    }
++
++    #[test]
++    fn animated_gif_becomes_one_layer_per_frame() {
++        let r = import_gif_frames("anim.gif", &tiny_gif(3)).unwrap();
++        let d = &r.document;
++        assert_eq!(d.layers.len(), 3, "warnings: {:?}", r.warnings);
++        assert_eq!(d.layers[0].name, "Frame 1");
++        assert_eq!(d.layers[2].name, "Frame 3");
++        // Only the first frame shows, or every frame would composite into one still.
++        assert!(d.layers[0].visible);
++        assert!(!d.layers[1].visible);
++        assert!(!d.layers[2].visible);
++        assert_eq!((d.size.width, d.size.height), (1, 1));
++        assert!(r.warnings.iter().any(|w| w.contains("3 frames")), "warnings: {:?}", r.warnings);
++    }
++
++    #[test]
++    fn still_gif_keeps_the_single_background_layer() {
++        let r = import_gif_frames("still.gif", &tiny_gif(1)).unwrap();
++        assert_eq!(r.document.layers.len(), 1);
++        assert_eq!(r.document.layers[0].name, "Background");
++    }
++
++    #[test]
++    fn a_damaged_animation_still_opens_as_a_still() {
++        let mut gif = tiny_gif(3);
++        gif.truncate(gif.len() - 6);
++        let r = import_gif_frames("broken.gif", &gif).unwrap();
++        assert_eq!(r.document.layers.len(), 1, "warnings: {:?}", r.warnings);
++    }
++}
++
+ /// An empty buffer with room for `pixels × bytes_per_pixel` bytes, or an error (not an abort)
+ /// when that much memory can't be had.
+ fn try_buffer(pixels: usize, bytes_per_pixel: usize) -> Result<Vec<u8>, IoError> {
+diff --git a/crates/io/src/lib.rs b/crates/io/src/lib.rs
+index 766373c..5405fa5 100644
+--- a/crates/io/src/lib.rs
++++ b/crates/io/src/lib.rs
+@@ -42,7 +42,7 @@ pub mod smart_map;
+ pub mod text_styles_map;
+ pub mod vector_map;
+ 
+-use photocraft_codecs::{CodecError, EncodeOptions};
++use photocraft_codecs::{CodecError, EncodeOptions, Format};
+ use photocraft_doc::Document;
+ use photocraft_psd::{PsdError, PsdFile};
+ 
+@@ -141,6 +141,9 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt) -
+     if raw::is_raw(bytes) {
+         return raw::import_raw(name, bytes);
+     }
++    if matches!(photocraft_codecs::detect(bytes), Some(Format::Gif)) {
++        return flat::import_gif_frames(name, bytes);
++    }
+     flat::import_flat(name, bytes)
+ }
+ 

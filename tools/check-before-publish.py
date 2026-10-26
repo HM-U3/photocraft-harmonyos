@@ -16,8 +16,13 @@ from pathlib import Path
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
 
-# 需要跳过的目录（构建产物 / IDE 缓存）
-SKIP_DIRS = {".git", ".hvigor", ".idea", "build", "node_modules", "oh_modules", ".clangd"}
+# 需要跳过的目录（构建产物 / IDE 缓存 / 本地签名快照）
+# .local-signing 是 tools/local-signing.py 存签名原件的地方，已在 .gitignore 里，
+# 它本来就装着这些路径与口令，不是泄露。
+SKIP_DIRS = {
+    ".git", ".hvigor", ".idea", "build", "node_modules", "oh_modules",
+    ".clangd", ".local-signing",
+}
 
 # (规则名, 正则)
 RULES = [

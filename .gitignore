@@ -18,3 +18,9 @@
 *.p7b
 *.hap
 *.app
+
+# 本地签名快照（tools/local-signing.py 生成，含绝对路径与口令）
+/.local-signing/
+
+# 引擎二进制：约 74 MB，由 tools/build_engine_zh/build.sh 现编，不进版本库
+**/libs/
