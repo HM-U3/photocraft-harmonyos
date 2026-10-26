@@ -31,8 +31,11 @@ struct NativeRender {
   @State private imeValue: string = '';
   private imeActive: boolean = false;
   @State private showIme: boolean = false;
-  /** 上一个已处理的轴事件时间戳（父子容器双挂 onAxisEvent 时去重）。 */
-  private lastAxisStamp: number = -1;
+  /** 上一个已处理的轴事件指纹（父子容器双挂 onAxisEvent 时去重）。时间戳 + 动作 + 数值全同
+   *  才算重复：只比时间戳会把同一毫秒里真实发生的不同事件（例如慢速滚动时的 END）也吞掉。 */
+  private lastAxisKey: string = '';
+  /** 当前这次滚动（BEGIN 到 END）里是不是已经报过数值了：END 只在没报过时才顶上。 */
+  private gestureHadValue: boolean = false;
 
   aboutToAppear(): void {
     this.ensureDataDir();
@@ -142,15 +145,11 @@ struct NativeRender {
     if (this.status.length > 0) {
       return;
     }
-    if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
+    // CANCEL 不带数值；END 带：慢速滚动时系统常常只在 END 上报这一段的增量，
+    // 早先直接丢掉 END，结果「滚一格」完全没反应，只有快速连滚（UPDATE 连续上报）才动。
+    if (event.action === AxisAction.CANCEL) {
       return;
     }
-    // XComponent 和外层 Stack 都挂了 onAxisEvent，同一个滚轮事件可能派发两次，
-    // 用时间戳去重（egui 会把一次滚轮平滑到多帧，重复送会放大两倍）。
-    if (this.lastAxisStamp === event.timestamp) {
-      return;
-    }
-    this.lastAxisStamp = event.timestamp;
     let dx: number = 0;
     let dy: number = 0;
     try {
@@ -161,9 +160,28 @@ struct NativeRender {
       dx = 0;
     }
     console.info('[PhotoCraft] onAxis action=' + event.action + ' dx=' + dx + ' dy=' + dy);
-    if (dx === 0 && dy === 0) {
+    // 一次滚动 = BEGIN … UPDATE … END。数值可能只出现在 UPDATE 上，也可能只在 END 上
+    // （慢速滚动时系统就只在段尾报一次）。已经报过数值的段里，END 若重复同一个数值就跳过，
+    // 免得一格算两次；整段没有任何数值时，END 的那一下就是全部。
+    if (event.action === AxisAction.BEGIN) {
+      this.gestureHadValue = false;
+    }
+    const hasValue: boolean = dx !== 0 || dy !== 0;
+    if (hasValue && event.action === AxisAction.UPDATE) {
+      this.gestureHadValue = true;
+    }
+    if (hasValue && event.action === AxisAction.END && this.gestureHadValue) {
       return;
     }
+    if (!hasValue) {
+      return;
+    }
+    // 同一个轴事件可能被 XComponent 和外层 Stack 各派发一次：时间戳、动作、数值全同才算重复。
+    const key: string = event.timestamp + '|' + event.action + '|' + dx + '|' + dy;
+    if (this.lastAxisKey === key) {
+      return;
+    }
+    this.lastAxisKey = key;
     // 滚轮上报的是角度（向前为负），egui 期望点：约 40pt/notch、1 notch ≈ 15°
     try {
       native.wheel(dx * 2.6, dy * 2.6, this.ctrlDown, this.shiftDown, this.altDown);
