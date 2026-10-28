@@ -5,6 +5,11 @@
 > 字体子集与 wasm-bindgen 流程全部不再使用；保留它只是为了说明 1.x 当时怎么做的。
 > 其中 `view-cache.patch` / `mip-gl-fix.patch` / `navigator.patch` 描述的三处改动，
 > 上游 0.37 已经自带，因此连补丁都不再需要。
+>
+> **工具链已随 2.0 清理一并删除（2026-10-27）。** `build.sh` 依赖的 `D:/pcbuild` 下
+> 便携环境 —— `rust/`（rustup + gnu 工具链）、`toolchain/w64devkit`、`bin/`（wasm-bindgen +
+> binaryen）—— 与 `env.sh` 都已移除（约 4 GB）。要真的重跑这份配方，先按下面
+> 「一、准备便携工具链」重新准备，或改用系统 rustup + `wasm32-unknown-unknown` 目标自行等价替换。
 
 `entry/src/main/resources/rawfile/photocraft/` 里的 `.wasm` / `.js` **不是**上游发布包里的原文件，
 而是从上游 Rust 源码重新编译出来的中文版本。这份配方记录了完整过程，方便以后升级引擎版本时重跑。

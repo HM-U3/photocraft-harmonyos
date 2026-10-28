@@ -79,6 +79,7 @@ let output = ctx.run_ui(raw, |ui| { app.logic_frame(&ctx); app.ui_frame(ui); });
 | 事件 | ArkTS 来源 | NAPI | egui 落点 |
 |---|---|---|---|
 | 触摸 | `onTouch`（Down/Move/Up/Cancel，单指） | `touch(phase,x,y)` | `PointerButton::Primary` |
+| 双指捏合 | `onTouch` 里按 `changedTouches` 维护的手指 id 表 ≥ 2 | `pinch(scale,cx,cy)` | `PointerMoved(center)` + `Event::Zoom` |
 | 鼠标 | `onMouse`（Press/Release/Move） | `mouse(phase,button,x,y)` | 同上，区分右/中键 |
 | 滚轮 | `onAxisEvent` | `wheel(dx,dy,ctrl,shift,alt)` | `Event::MouseWheel` |
 | 键盘 | `onKeyEvent` | `key(phase,code,ctrl,shift,alt,text)` | `Event::Key` + `Event::Text` |
@@ -123,6 +124,51 @@ egui 把 `MouseWheel.delta` 当作内容方向的点位移（向上为正），�
 修法：`ctrl_wheel_to_alt` **只改写修饰键** —— `Ctrl` + 滚轮当作 `Alt` + 滚轮读，
 剩下交给既有的分类逻辑：一档 ×1.1、方向与桌面版一致、同样走缓动。
 滚轮只有一套策略，改一处即可。桌面端不受影响（这条只有独立宿主会调）。
+
+## 5.4 双指捏合
+
+egui 没有「两根手指」这个概念，捏合在它那里就是一个 `Event::Zoom(倍数)`；而画布缩放以
+**指针位置**为锚点。所以宿主把一次捏合拆成两个事件：先 `PointerMoved(两指中点)`，
+再 `Event::Zoom(本次间距 / 上次间距)`。
+
+这样缩放走的是轨道板捏合同一条路径（`wheel_nav` 把 `zoom_delta` 读成 `Wheel::Zoom`），
+于是 `Enhanced Controls › Zoom with Trackpad Pinch` 开关、缩放上下限、指针锚点全部沿用，
+不需要在画布侧再写一套。捏合是逐帧跟手的，所以不带 Animated Zoom 的缓动。
+
+ArkTS 侧有三处必须注意：
+
+1. **用增量，不用手势的累计 `scale`**。`Event::Zoom` 本身是倍数因子，逐帧相乘即可；
+   存手势起点反而要在手指数变化时重新取基准。
+2. **第二根手指落下时要收回已经按下的那一笔**（发 `native.touch(3, …)`，即 Cancel）。
+   第一根手指的 Down 早在几十毫秒前就转发成 `PointerButton{ pressed: true }` 了，
+   不收的话整个捏合过程中笔刷会跟着第一根手指一路画过去。
+3. **手指数量不能数 `event.touches.length`**。抬起的那个在部分版本里仍留在 `touches` 里，
+   「所有手指都离开了」永远等不到，捏合标志卡死、之后单指再也画不了线（现象很吓人：
+   捏合之后整个画布失去响应）。改成用 `changedTouches` 维护一张 id 表，按下加、抬起删，
+   再拿 `touches.length === 0` 兜底清空。
+4. **手指没全抬起来之前，单指事件一律不转发**。捏合途中抬起一根手指，
+   剩下的那根不是「新的一笔」；要等 id 表空了再恢复。
+
+宿主侧对应的坑：`Event::PointerGone` **不等于抬起**。egui 故意在收到 `PointerGone` 时
+保留 pressed 状态（这样把滑块拖到窗口外还能继续拖），所以只发 `PointerGone` 的话，
+第一根手指的拖动仍然活着，捏合发出的 `PointerMoved(中点)` 就变成了一次拖动 ——
+画布上留下一条甩不掉的虚线选区。正确做法是 Cancel 时先补一个
+`PointerButton{ pressed: false }`（位置就是那根手指，长度为零的一次「点击」），再发
+`PointerGone`。宿主为此刻意记了一个 `POINTER_DOWN`，没有按下时不会乱发抬起。
+
+## 5.5 文档画布的 CPU 路径
+
+上游有两条画布路径：GPU 画布（wgpu compute 出 tile）和 CPU 画布（CPU 合成后当 egui 纹理上传）。
+CPU 路径本来就在树里，`gpu_status::fall_back` 在 GPU 画布丢失或显存不足时会自动切过去。
+
+宿主此前无条件 `set_wgpu()`，所以 `Preferences › Performance › Rendering Mode = cpu` 在鸿蒙上是
+空转的（上游桌面版是在启动时按这个偏好决定要不要 `set_wgpu`）。现在宿主同样按偏好判断：
+选 `cpu` 时只 `watch_window_device()`（窗口仍用 wgpu 画，设备丢失与错误照常记录），
+画布走 CPU 合成。偏好改完要重启应用才生效。
+
+需要说清的是：这条 CPU 路径只管**文档像素的合成**。整个界面是宿主用 wgpu 直接画进
+`XComponent` 的，没有软件光栅的替代实现 —— wgpu 设备完全建不起来时应用无法启动，
+这不是「没移植 CPU 后端」，而是窗口层本来就只有 GPU 一条路。
 
 ## 6. 输入法
 

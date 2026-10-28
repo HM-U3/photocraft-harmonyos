@@ -36,6 +36,15 @@ struct NativeRender {
   private lastAxisKey: string = '';
   /** 当前这次滚动（BEGIN 到 END）里是不是已经报过数值了：END 只在没报过时才顶上。 */
   private gestureHadValue: boolean = false;
+  /** 一次触摸按下已经转发给引擎、还没抬起：第二根手指落下时要把它收回（Cancel）。 */
+  private touchDown: boolean = false;
+  /** 正在双指操作：从第二根手指落下起，到所有手指离开屏幕为止，单指事件一律不转发。 */
+  private pinching: boolean = false;
+  /** 屏上手指的 id 表。不能直接用 event.touches.length 判断还剩几根手指：抬起的那个在部分
+   *  版本里仍留在 touches 里，于是「全部离开」永远等不到，pinching 卡死、之后单指画不了。 */
+  private fingerIds: number[] = [];
+  /** 上次两指的间距（vp，锚点即两指中点），-1 表示这一轮捏合还没有基准。 */
+  private pinchDist: number = -1;
 
   aboutToAppear(): void {
     this.ensureDataDir();
@@ -141,6 +150,37 @@ struct NativeRender {
   }
 
   /** 鼠标滚轮 / 触控板轴事件 → egui 的滚轮事件（Ctrl+滚轮=缩放，Alt+滚轮=微调，普通=平移）。 */
+  /** 双指捏合 → 引擎的缩放事件。用的是相邻两次事件的间距比（增量），不是手势的累计 scale：
+   *  egui 的 Zoom 事件本身就是倍数因子，逐帧相乘即可，ArkTS 这边不必记手势起点。
+   *  中点一起送过去 —— 引擎以指针为锚点缩放，双指的中点就该是那个锚点。 */
+  private pinch(event: TouchEvent): void {
+    // 只有 touches 里确实有两根手指时才量间距；拿不到就跳过这一帧（捏合本身继续）。
+    if (event.touches.length < 2) {
+      return;
+    }
+    const a: TouchObject = event.touches[0];
+    const b: TouchObject = event.touches[1];
+    const dx: number = a.x - b.x;
+    const dy: number = a.y - b.y;
+    const dist: number = Math.sqrt(dx * dx + dy * dy);
+    const cx: number = (a.x + b.x) / 2;
+    const cy: number = (a.y + b.y) / 2;
+    const last: number = this.pinchDist;
+    this.pinchDist = dist;
+    if (last <= 0 || dist <= 0) {
+      return;
+    }
+    const scale: number = dist / last;
+    if (scale === 1) {
+      return;
+    }
+    try {
+      native.pinch(scale, cx, cy);
+    } catch (err) {
+      console.error('[PhotoCraft] native.pinch 异常: ' + JSON.stringify(err));
+    }
+  }
+
   private onWheel(event: AxisEvent): void {
     if (this.status.length > 0) {
       return;
@@ -346,6 +386,53 @@ struct NativeRender {
           if (!t) {
             return;
           }
+          // 屏上还有几根手指：以 changedTouches 的增删为准，不看 touches.length ——
+          // 抬起的那个在部分版本里仍留在 touches 里，「所有手指都走了」就永远等不到，
+          // pinching 卡住之后单指再也画不了线。
+          if (event.type === TouchType.Down) {
+            for (const c of event.changedTouches) {
+              if (this.fingerIds.indexOf(c.id) < 0) {
+                this.fingerIds.push(c.id);
+              }
+            }
+          } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+            for (const c of event.changedTouches) {
+              const i: number = this.fingerIds.indexOf(c.id);
+              if (i >= 0) {
+                this.fingerIds.splice(i, 1);
+              }
+            }
+          }
+          if (event.touches.length === 0) {
+            // 兜底：系统说屏上没有手指了，就以它为准。
+            this.fingerIds.length = 0;
+          }
+          // 两指（及以上）是捏合缩放。第一根手指按下时已经当作落笔转发出去了，这里要把它收回
+          // （Cancel），否则整个捏合过程中笔刷会一直跟着第一根手指画。之后的单指事件一律不转发，
+          // 一直到所有手指离屏 —— 捏合途中抬起一根手指不能变成新的一笔。
+          if (this.fingerIds.length >= 2) {
+            if (!this.pinching) {
+              this.pinching = true;
+              this.pinchDist = -1;
+              if (this.touchDown) {
+                this.touchDown = false;
+                try {
+                  native.touch(3, t.x, t.y);
+                } catch (err) {
+                  console.error('[PhotoCraft] native.touch(cancel) 异常: ' + JSON.stringify(err));
+                }
+              }
+            }
+            this.pinch(event);
+            return;
+          }
+          if (this.pinching) {
+            if (this.fingerIds.length === 0) {
+              this.pinching = false;
+              this.pinchDist = -1;
+            }
+            return;
+          }
           let phase: number = 1;
           if (event.type === TouchType.Down) {
             phase = 0;
@@ -353,6 +440,11 @@ struct NativeRender {
             phase = 2;
           } else if (event.type === TouchType.Cancel) {
             phase = 3;
+          }
+          if (phase === 0) {
+            this.touchDown = true;
+          } else if (phase === 2 || phase === 3) {
+            this.touchDown = false;
           }
           try {
             native.touch(phase, t.x, t.y);
