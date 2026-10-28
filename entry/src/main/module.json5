@@ -36,27 +36,10 @@
       }
     ],
     "extensionAbilities": [],
-    "requestPermissions": [
-      {
-        "name": "ohos.permission.INTERNET",
-        "reason": "$string:permission_internet_reason",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "always"
-        }
-      },
-      {
-        "name": "ohos.permission.GET_NETWORK_INFO",
-        "reason": "$string:permission_internet_reason",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "always"
-        }
-      }
-    ]
+    // 不申请任何权限。引擎的资源全部随包内嵌（resource://rawfile），
+    // 图像处理完全在本机内存与 GPU 中完成，不联网、不上传、不采集任何数据；
+    // 引擎内的外链（如「在 GitHub 上查看」）由系统浏览器打开，不需要本应用的网络权限。
+    // 这样本应用属于「单机离线应用」，无需履行 APP 备案手续。
+    "requestPermissions": []
   }
 }

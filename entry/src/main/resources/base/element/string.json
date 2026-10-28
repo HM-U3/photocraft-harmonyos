@@ -11,22 +11,6 @@
     {
       "name": "EntryAbility_label",
       "value": "照片工坊"
-    },
-    {
-      "name": "help_page_title",
-      "value": "使用说明"
-    },
-    {
-      "name": "permission_internet_reason",
-      "value": "用于在兼容模式下加载内置编辑引擎与导出图片"
-    },
-    {
-      "name": "loading_title",
-      "value": "正在启动照片工坊"
-    },
-    {
-      "name": "loading_hint",
-      "value": "首次启动需要解压并编译约 26 MB 图像引擎，请稍候…"
     }
   ]
 }
