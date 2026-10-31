@@ -104,6 +104,35 @@ cp target/aarch64-unknown-linux-ohos/release/libphotocraft_native.so \
    于是界面能在自己的线程里由宿主驱动 `run_ui`。
 3. 字体与文件后端 —— 宿主把系统 CJK 字体注册为最低优先级回退；文件对话框改由 ArkTS 代理。
 
+#### 想在模拟器里跑（x86_64）
+
+DevEco 的模拟器镜像（2in1 与 phone 都是）是 **x86_64**，和真机的 arm64 不是一个架构，
+必须再编一份，否则装上去 `import native from 'libphotocraft_native.so'` 会直接失败：
+
+```bash
+export OHOS_NDK_HOME="D:/DevEco Studio/sdk/default/openharmony"   # 换成你的路径
+export NDK="$OHOS_NDK_HOME/native"
+export CC_x86_64_unknown_linux_ohos="$NDK/llvm/bin/clang"
+export AR_x86_64_unknown_linux_ohos="$NDK/llvm/bin/llvm-ar"
+
+cargo build -p photocraft-ohos --release --target x86_64-unknown-linux-ohos
+mkdir -p entry/libs/x86_64
+cp target/x86_64-unknown-linux-ohos/release/libphotocraft_native.so entry/libs/x86_64/
+```
+
+Rust 侧的 linker、sysroot、`-lnative_window`、`-lhilog_ndk.z` 写在引擎仓库的
+`.cargo/config.toml` 里，不用再设 `CARGO_TARGET_*` 环境变量。上面四个变量还是得给：
+`OHOS_NDK_HOME` 供 `napi-build-ohos` 找 `native/sysroot` 下的 `libace_napi.z.so`，
+`CC`/`AR` 供 `cc-rs` 编 C 依赖（缺了会报 `failed to find tool "cc"`）。
+
+> 那两条 `-l` 不能省。少了它们 `.so` 照样链接成功，但运行时 dlopen 会报
+> `Error relocating … OH_LOG_Print: symbol not found` —— 链接器只是把符号留成未定义，
+> 不当作错误。真机日志里表现为 `Load native module failed`，`native.start` 拿到的是空对象。
+
+
+两个 ABI 同时放在 `entry/libs/` 下时包会涨到约 140 MB，**发布前删掉 `entry/libs/x86_64/`**
+（`**/libs/` 已在 `.gitignore` 里，二进制本来就不进版本库）。
+
 ### 3. 用 DevEco Studio 打开
 
 1. `File → Open…`，选择**本仓库目录本身**（不要选它的父目录）。
@@ -183,7 +212,9 @@ photocraft-harmonyos/
 
 1. **渲染线程与 surface** —— Rust 侧起独立线程：取 `OHNativeWindow` → `wgpu` 用 EGL 建 GLES
    surface → 循环 `run_ui` 驱动 egui。ArkTS 只传 surface id、尺寸与 DPI；窗口尺寸变化走
-   `native.resize`，不重建线程。
+   `native.resize`，不重建线程。注意 surface **不会**自己跟着组件变大，最大化之后要手动
+   `setXComponentSurfaceRect` 撑开、再重设 buffer geometry，否则画面会缩在窗口正中
+   （详见 [`docs/technical-notes.md`](docs/technical-notes.md) §2.1）。
 2. **egui 脱离 eframe** —— `eframe` 假定自己拥有窗口与事件循环，鸿蒙上这两样都在 ArkTS 手里。
    把 `eframe::Frame` 的依赖全部条件编译掉后，宿主可以直接给出 `RawInput`、拿回 `FullOutput`。
 3. **输入事件桥** —— 触摸、鼠标、键盘、滚轮各成队列（`Vec<InputEvent>` + `Mutex`），

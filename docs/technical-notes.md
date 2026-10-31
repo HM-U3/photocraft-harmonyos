@@ -56,6 +56,42 @@ onAxisEvent（滚轮）            ├──► Mutex<Vec<InputEvent>>
 - 上游 0.37 自带的 view cache（`caches` / `view_cache` / `blit_*`）在原生路径上同样生效，
   缩放时只 blit 一层屏幕尺寸的离屏纹理，不再沿 mip 链重采样。
 
+### 2.1 surface 不会跟着窗口变大（全屏后画面缩在中间、点击偏移）
+
+`XComponent` 的 surface 类型 surface **只在创建时确定一次尺寸**。之后窗口最大化、拖边框、
+分屏，变大的只是组件本身，surface 仍然是启动时那块。而且 `SurfaceRect` 不设 `offsetX/offsetY`
+时系统按**居中**摆放，于是画面缩在窗口正中、四周一圈背景色 —— 和用户截图完全一致。
+连带的第二个症状是触摸坐标（相对组件）与画面像素（来自小 surface）比例不一致，
+**全屏后点得越靠边偏得越多**。
+
+要在尺寸变化时自己把 surface 撑开，三步缺一不可：
+
+1. `XComponentController.setXComponentSurfaceRect({ offsetX: 0, offsetY: 0, surfaceWidth, surfaceHeight })`
+   —— 单位是 **px**，要 `vp × display.densityPixels`；`offset` 必须显式给 0，否则又回到居中。
+2. `OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY, w, h)`
+   —— 见 §2.2，只改 rect 不够。
+3. `Cmd::Resize` 通知渲染线程重配交换链与 `egui` 的 `screen_rect`。
+
+第 2、3 步之后不能再重启渲染线程（否则当前文档没了），所以 `startRender()` 里要先比
+`surfaceId`：**id 没变就只 resize，走重启分支才会丢文档**。
+
+顺带一个启动期的坑：`onLoad` 里读到的 surface 矩形可能还是布局前的默认值，
+全屏启动时尤其明显。组件用 `onAreaChange` 把尺寸缓存下来，`native.start` 成功后
+再用缓存值校正一次。
+
+### 2.2 `setXComponentSurfaceRect` 之后要重设 buffer geometry
+
+只调 `setXComponentSurfaceRect`，画面不会跟着变大 —— swapchain 取帧用的是窗口 buffer 的尺寸，
+buffer 没变，画面就还是那么大。Rust 侧每次 `Cmd::Resize` 之前都要：
+
+```rust
+ndk::set_buffer_geometry(window, width, height);   // OH_NativeWindow_NativeWindowHandleOpt(SET_BUFFER_GEOMETRY)
+surface.configure(&device, &config);
+```
+
+日志里对一下 `buffer geometry WxH (rc=0) -> Some((W, H))` 和 `resize WxH @dpi`，
+两者都出现才算真的生效。
+
 ## 3. 让 egui 脱离 eframe
 
 `eframe` 假定自己拥有窗口与事件循环，而鸿蒙上这两样都在 ArkTS 手里。做法：
