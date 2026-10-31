@@ -94,7 +94,7 @@ surface.configure(&device, &config);
 
 ### 2.3 打开即全屏：先切窗口，再 loadContent
 
-2.0.1 起应用启动就是全屏（`EntryAbility.prepareFullScreen`）。顺序是硬要求：
+2.0.2 起应用启动就是全屏（`EntryAbility.prepareFullScreen`）。顺序是硬要求：
 
 ```ts
 onWindowStageCreate(stage) {
