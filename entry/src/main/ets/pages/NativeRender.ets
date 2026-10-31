@@ -45,6 +45,13 @@ struct NativeRender {
   private fingerIds: number[] = [];
   /** 上次两指的间距（vp，锚点即两指中点），-1 表示这一轮捏合还没有基准。 */
   private pinchDist: number = -1;
+  /** 渲染线程已经起来了（native.start 成功）。 */
+  private renderStarted: boolean = false;
+  /** 当前这块 surface 的 id：窗口尺寸变化时若 id 没变，说明 surface 只是被重设了矩形。 */
+  private surfaceId: string = '';
+  /** 组件最近一次的布局尺寸（vp）。onLoad 之前就可能已经报过，启动后要用它校一次尺寸。 */
+  private areaWidth: number = 0;
+  private areaHeight: number = 0;
 
   aboutToAppear(): void {
     this.ensureDataDir();
@@ -97,6 +104,16 @@ struct NativeRender {
     try {
       this.ensureDataDir();
       const surfaceId: string = this.controller.getXComponentSurfaceId();
+      // surface 没换过（只是尺寸变了），就别重启渲染线程 —— 重启会把当前文档一起丢掉。
+      if (this.renderStarted && surfaceId === this.surfaceId) {
+        if (this.areaWidth > 0) {
+          this.applySurfaceSize(this.areaWidth, this.areaHeight);
+        } else {
+          const rect = this.controller.getXComponentSurfaceRect();
+          native.resize(rect.surfaceWidth, rect.surfaceHeight, this.displayDpi());
+        }
+        return;
+      }
       const rect = this.controller.getXComponentSurfaceRect();
       let width: number = rect.surfaceWidth;
       let height: number = rect.surfaceHeight;
@@ -114,14 +131,76 @@ struct NativeRender {
       const ok: boolean = native.start(Number(surfaceId), width, height, dpi);
       this.startFailed = !ok;
       this.status = ok ? '' : '原生渲染启动失败，请查看 hilog（photocraft-ohos）';
+      this.renderStarted = ok;
+      this.surfaceId = surfaceId;
       console.info('[PhotoCraft] native.start surface=' + surfaceId +
         ' size=' + width + 'x' + height + ' dpi=' + dpi + ' -> ' + ok);
       this.startPolling();
+      // onLoad 时拿到的 surface 尺寸可能是布局前的默认值（全屏启动时尤其明显），
+      // 用已经量到的组件尺寸再校一次。
+      if (ok && this.areaWidth > 0) {
+        this.applySurfaceSize(this.areaWidth, this.areaHeight);
+      }
     } catch (err) {
       this.startFailed = true;
       this.status = '原生渲染启动异常：' + JSON.stringify(err);
       console.error('[PhotoCraft] native.start 异常: ' + JSON.stringify(err));
     }
+  }
+
+  private displayDpi(): number {
+    try {
+      const d = display.getDefaultDisplaySync();
+      return d.densityDPI > 0 ? d.densityDPI / 160 : 1.0;
+    } catch (err) {
+      return 1.0;
+    }
+  }
+
+  /** 窗口尺寸变了（最大化、拖边框、分屏）：surface 矩形不会跟着组件长。
+   *
+   *  `XComponent` 的 surface 只在创建时定一次大小，之后就一直保持那个尺寸、相对组件
+   *  居中 —— 所以最大化之后画面缩在中间、四周一圈黑，触控坐标也和画面错位。
+   *  这里把 surface 矩形重设成组件大小（px），再通知渲染线程重配交换链与 egui 的逻辑尺寸。 */
+  private applySurfaceSize(vpWidth: number, vpHeight: number): void {
+    if (!this.renderStarted || !Number.isFinite(vpWidth) || !Number.isFinite(vpHeight) ||
+      vpWidth <= 0 || vpHeight <= 0) {
+      return;
+    }
+    let density: number = 1.0;
+    try {
+      const d = display.getDefaultDisplaySync();
+      if (d.densityPixels > 0) {
+        density = d.densityPixels;
+      }
+    } catch (err) {
+      density = 1.0;
+    }
+    const width: number = Math.max(1, Math.round(vpWidth * density));
+    const height: number = Math.max(1, Math.round(vpHeight * density));
+    const dpi: number = this.displayDpi();
+    // 等这一帧的排版结果落下去再改，否则拿到的还是上一帧的组件尺寸。
+    setTimeout(() => {
+      try {
+        const rect = this.controller.getXComponentSurfaceRect();
+        if (Math.round(rect.surfaceWidth) !== width || Math.round(rect.surfaceHeight) !== height) {
+          this.controller.setXComponentSurfaceRect({
+            offsetX: 0,
+            offsetY: 0,
+            surfaceWidth: width,
+            surfaceHeight: height
+          });
+        }
+      } catch (err) {
+        console.error('[PhotoCraft] setXComponentSurfaceRect 失败: ' + JSON.stringify(err));
+      }
+      try {
+        native.resize(width, height, dpi);
+        console.info('[PhotoCraft] resize -> ' + width + 'x' + height + ' dpi=' + dpi);
+      } catch (err) {
+        console.error('[PhotoCraft] native.resize 异常: ' + JSON.stringify(err));
+      }
+    }, 0);
   }
 
   /** 轮询 Rust 侧的系统能力请求（菜单里的打开/存储为/外链）。 */
@@ -374,6 +453,12 @@ struct NativeRender {
       XComponent({ id: 'pc_native', type: XComponentType.SURFACE, controller: this.controller })
         .width('100%')
         .height('100%')
+        // 窗口最大化 / 拖边框 / 分屏时组件跟着变，但 surface 不会自己长；见 applySurfaceSize。
+        .onAreaChange((_old: Area, next: Area) => {
+          this.areaWidth = Number(next.width);
+          this.areaHeight = Number(next.height);
+          this.applySurfaceSize(this.areaWidth, this.areaHeight);
+        })
         .onLoad(() => {
           this.startRender();
         })
