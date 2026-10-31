@@ -113,6 +113,23 @@ onWindowStageCreate(stage) {
 中间那一帧画面缩在中间、四周一圈背景色；而先切全屏，`XComponent` 一落地拿到的就是
 整屏尺寸，`native.start` 报 `3120x2080`，随后那次 `resize` 只是幂等的复核（同值，rc=0）。
 
+### 2.4 系统标题栏的「最大化」不是全屏
+
+启动时我们调 `maximize(ENTER_IMMERSIVE)`，拿到的是 `WindowStatusType.FULL_SCREEN`（3120×2080，
+标题栏与 Dock 都收起）。但用户在系统标题栏上点最大化按钮时，系统按默认语义走，得到的是
+`WindowStatusType.MAXIMIZE` —— 铺满宽度，**底部留着 125 px 的 Dock，顶边还能浮出标题栏**，
+和启动时的观感完全是两回事。`maximize()` 的 `presentation` 只对那一次调用生效，不会写进应用设置。
+
+修法是在 `windowStatusChange` 里盯住 `MAXIMIZE`，补一次 `ENTER_IMMERSIVE`。两个细节不能省：
+
+1. **必须等布局落定**。状态回调到达时窗口还在做最大化动画，此刻立刻调 `maximize` 只会把状态位
+   改成 1，尺寸仍停在 3120×1955。等 350 ms 再调，才拿得到 3120×2080。
+2. **`windowRect` 会滞后**。`maximize()` 的 Promise 回来时读到的是旧值（1955），要再等 600 ms
+   复核；确实没到整屏就重试一次（最多两次），免得个别机器动画更长时又缩回去。
+
+日志里对一下 `windowStatus=2 → 1`、`沉浸式校验 3120x2080 屏幕高=2080`，以及 WMS 侧
+`NotifyWindowStatusDidChange ... rect:[0 0 3120 2080]`，三者齐了才算真的全屏。
+
 ## 3. 让 egui 脱离 eframe
 
 `eframe` 假定自己拥有窗口与事件循环，而鸿蒙上这两样都在 ArkTS 手里。做法：
