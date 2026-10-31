@@ -92,6 +92,27 @@ surface.configure(&device, &config);
 日志里对一下 `buffer geometry WxH (rc=0) -> Some((W, H))` 和 `resize WxH @dpi`，
 两者都出现才算真的生效。
 
+### 2.3 打开即全屏：先切窗口，再 loadContent
+
+2.0.1 起应用启动就是全屏（`EntryAbility.prepareFullScreen`）。顺序是硬要求：
+
+```ts
+onWindowStageCreate(stage) {
+  this.prepareFullScreen(stage).then(() => stage.loadContent('pages/NativeRender'));
+}
+```
+
+`prepareFullScreen` 里调的是 `win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE)`
+—— 新版 SDK 已经删掉了 `WindowMode` / `setWindowMode`，全屏只剩这一条路。`ENTER_IMMERSIVE`
+会连标题栏和 Dock 一起收起来，光标移到屏幕顶边才浮出来，留一个还原/关闭的出口。
+手机 / 平板上系统本来就只有全屏，这个调用报 `801`（能力不支持），`catch` 掉即可。
+外面还套了 1.5 s 超时兜底：真机上万一 `maximize` 的 Promise 迟迟不回，页面也不能不加载。
+
+为什么不能「先加载、再切全屏」：surface 的尺寸在创建那一刻就定了（§2.1），
+先按默认小窗加载就必然要经历一次「小 surface → resize 撑大」，
+中间那一帧画面缩在中间、四周一圈背景色；而先切全屏，`XComponent` 一落地拿到的就是
+整屏尺寸，`native.start` 报 `3120x2080`，随后那次 `resize` 只是幂等的复核（同值，rc=0）。
+
 ## 3. 让 egui 脱离 eframe
 
 `eframe` 假定自己拥有窗口与事件循环，而鸿蒙上这两样都在 ArkTS 手里。做法：
