@@ -1,5 +1,6 @@
 import native from 'libphotocraft_native.so';
 import display from '@ohos.display';
+import { i18n } from '@kit.LocalizationKit';
 import { common } from '@kit.AbilityKit';
 import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -55,6 +56,7 @@ struct NativeRender {
 
   aboutToAppear(): void {
     this.ensureDataDir();
+    this.ensureLocale();
   }
 
   /** 页面显示后把焦点交给渲染区，否则键盘事件收不到。 */
@@ -100,9 +102,27 @@ struct NativeRender {
     }
   }
 
+  /**
+   * 把系统语言交给引擎。编辑器的 `interface.language` 默认是 `auto`（跟随系统），
+   * 而引擎在 Unix 上靠 LANGUAGE/LC_ALL/LANG 环境变量判断系统语言 —— 鸿蒙应用进程里
+   * 这些变量是空的，`auto` 就会一路落到英文。引擎已支持 PHOTOCRAFT_LOCALE 覆盖，
+   * 这里在渲染线程起来之前把系统的 BCP 47 标签（如 `zh-Hans-CN`）传下去。
+   */
+  private ensureLocale(): void {
+    try {
+      const tag: string = i18n.System.getSystemLocale();
+      if (tag.length > 0) {
+        native.setLocale(tag);
+      }
+    } catch (err) {
+      console.error('[PhotoCraft] 读取系统语言失败: ' + JSON.stringify(err));
+    }
+  }
+
   private startRender(): void {
     try {
       this.ensureDataDir();
+      this.ensureLocale();
       const surfaceId: string = this.controller.getXComponentSurfaceId();
       // surface 没换过（只是尺寸变了），就别重启渲染线程 —— 重启会把当前文档一起丢掉。
       if (this.renderStarted && surfaceId === this.surfaceId) {

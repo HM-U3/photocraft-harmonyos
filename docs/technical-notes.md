@@ -178,6 +178,36 @@ let output = ctx.run_ui(raw, |ui| {
 `craft-pdf`、`craft-jpeg`、`craft-pcraft-format` 等），全部钉在 git rev 上；
 它们都能编到 `aarch64-unknown-linux-ohos`，但首次构建要联网取一次，之后才能 `--offline`。
 
+### 3.2 界面语言：语言包在构建期从外部仓库嵌入
+
+v0.23 起，界面译文不在本仓库里。`crates/ui-egui/build.rs` 从环境变量 `CRAFT_I18N_DIR`
+指向的 [storytold/craft-i18n](https://github.com/storytold/craft-i18n) 检出目录里读
+`locales/<code>/{common.tsv,photocraft.tsv}`，生成 `OUT_DIR/craft_i18n.rs` 后用 `include_str!`
+编进二进制。**不设这个变量时 build.rs 只打一条 warning，产出的库是纯英文界面**——
+2.1.0 就是这么发出去的，界面上一个中文字都没有。锁定提交在仓库根的 `craft-i18n.rev`。
+
+重建引擎时必须带上：
+
+```bash
+# 一次性：按 craft-i18n.rev 取检出（codeload 直连比 gh-proxy 稳）
+curl -L -o ci.tar.gz https://codeload.github.com/storytold/craft-i18n/tar.gz/$(cat craft-i18n.rev)
+mkdir -p /d/pcbuild/craft-i18n && tar -xzf ci.tar.gz -C /d/pcbuild/craft-i18n --strip-components=1
+
+# 每次构建
+export CRAFT_I18N_DIR="D:/pcbuild/craft-i18n"      # 必须是 Windows 风格路径
+cargo build --release -j 8 -p photocraft-ohos --target aarch64-unknown-linux-ohos
+```
+
+自查：生成的 `target/<triple>/release/build/photocraft-ui-egui-*/out/craft_i18n.rs`
+只有一两行说明是空表（英文版），有 50 多行 `("ar", …)` 才是带译文的。代价是
+arm64 库从 74 MB 涨到 84 MB（52 种语言的原样 TSV 全集）。
+
+语言偏好的默认值是 `auto`，由 `ui-egui` 的 `system_lang()` 解析。上游在 Unix 上走
+`sys_locale`，读的是 `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` 环境变量——鸿蒙应用进程
+继承不到这些变量，所以宿主在渲染线程启动前把系统语言通过 `native.setLocale(tag)`
+传下去，落到上游已支持的 `PHOTOCRAFT_LOCALE` 覆盖上（日志 `system locale zh-Hans`）。
+顺序是硬要求：`system_lang()` 用 `OnceLock` 缓存，晚于首帧就没用了。
+
 ## 4. 输入桥
 
 | 事件 | ArkTS 来源 | NAPI | egui 落点 |

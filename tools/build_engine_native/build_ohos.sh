@@ -61,13 +61,20 @@ export AR_aarch64_unknown_linux_ohos="$NDK/llvm/bin/llvm-ar"
 export CXX_aarch64_unknown_linux_ohos="$NDK/llvm/bin/clang++"
 export CFLAGS_aarch64_unknown_linux_ohos="--sysroot=$NDK/sysroot -D__MUSL__"
 
+# 界面译文不在本仓库：ui-egui/build.rs 从 CRAFT_I18N_DIR 指向的 craft-i18n 检出里嵌入，
+# 不设就只有英文界面。见 docs/technical-notes.md §3.2。
+export CRAFT_I18N_DIR="${CRAFT_I18N_DIR:-D:/pcbuild/craft-i18n}"
+if [[ ! -d "$CRAFT_I18N_DIR/locales" ]]; then
+  echo "警告：$CRAFT_I18N_DIR 不是 craft-i18n 检出，编出来的界面只有英文" >&2
+fi
+
 echo "==> cargo build -p photocraft-ohos ($PROFILE, $TARGET)"
 cd "$SRC"
 if [[ "$PROFILE" == "release" ]]; then
-  cargo build -p photocraft-ohos --release --target "$TARGET"
+  cargo build -p photocraft-ohos --release -j 8 --target "$TARGET"
   OUT="$SRC/target/$TARGET/release"
 else
-  cargo build -p photocraft-ohos --target "$TARGET"
+  cargo build -p photocraft-ohos -j 8 --target "$TARGET"
   OUT="$SRC/target/$TARGET/debug"
 fi
 
