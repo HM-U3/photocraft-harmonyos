@@ -1,11 +1,11 @@
-# 照片工坊 · PhotoCraft for HarmonyOS
+# 雕光 · PhotoCraft for HarmonyOS
 ### 本程序完全由AI（DeepSeek-V4.1-flash）移植。测试由本人完成，难免存在疏漏，敬请谅解。
 
 [PhotoCraft](https://github.com/storytold/photocraft) 是开源的桌面图像编辑器（Rust + egui + wgpu）。
 这是它的鸿蒙原生移植：引擎交叉编译成 `.so`，跑在 XComponent 的 surface 上，界面由引擎自己绘制 ——
 没有 ArkUI 页面，也没有 Web 容器。
 
-![照片工坊主界面](docs/images/main-window.png)
+![雕光主界面](docs/images/main-window.png)
 
 ## 这是什么
 

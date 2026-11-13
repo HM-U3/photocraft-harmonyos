@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "照片工坊 · 基于 PhotoCraft 引擎的鸿蒙图像编辑器"
+      "value": "雕光 · 图层图像编辑器"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "照片工坊 图像编辑器"
+      "value": "雕光 图层图像编辑器"
     },
     {
       "name": "EntryAbility_label",
-      "value": "照片工坊"
+      "value": "雕光"
     }
   ]
 }
