@@ -135,18 +135,48 @@ onWindowStageCreate(stage) {
 `eframe` 假定自己拥有窗口与事件循环，而鸿蒙上这两样都在 ArkTS 手里。做法：
 
 - `photocraft-ohos` 以 `default-features = false` 依赖 `ui-egui`；
-- `crates/ui-egui` 里所有 `eframe::Frame` 的使用点收进 `#[cfg(feature = "eframe")]`，
-  宿主入口改成三个约定函数：`logic_frame(ctx)`、`ui_frame(ui)`、`raw_input_frame(ctx, &mut raw)`。
+- `crates/ui-egui` 把 `eframe` 变回**可选特性**。关掉后 crate 自己 `extern crate self as eframe;`，
+  再把 `egui-wgpu` / `wgpu` 以 `eframe` 之名 re-export —— 于是几百处
+  `eframe::wgpu::Device`、`eframe::egui_wgpu::RenderState` 这类路径原样成立，不必逐处改写；
+- `eframe::Frame` 由 crate 内的桩顶替（`Frame` / `FrameInfo`），只提供 `info().cpu_usage`
+  与 `winit_window()`，后者在鸿蒙上恒为 `None`；
+- 输入钩子从 `eframe::App::raw_input_hook` 拆成固有方法 `raw_input_frame`，trait 那边委托过来：
+  独立宿主调得到，两条路径也不会各自演化；
+- 宿主每帧自己造一个 `Frame::default()`，并按 eframe 的顺序补上 `finish_type_reset_logic`
+  与 `finish_type_reset_pass` 两个收尾 —— 少了它们，IME 编辑状态会在编辑器关掉后残留。
 
 渲染线程的手写循环（伪代码）：
 
 ```rust
-let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, points)),
-                     native_pixels_per_point: Some(dpi), events, .. };
-let output = ctx.run_ui(raw, |ui| { app.logic_frame(&ctx); app.ui_frame(ui); });
+let mut frame = photocraft_ui_egui::Frame::default();
+app.raw_input_frame(&ctx, &mut raw);
+let output = ctx.run_ui(raw, |ui| {
+    let ctx = ui.ctx().clone();
+    app.logic_frame(&ctx, &mut frame);
+    app.finish_type_reset_logic(&ctx);
+    app.ui_frame(ui, &mut frame);
+    app.finish_type_reset_pass(ui.ctx());
+});
 ```
 
 注意 `native_pixels_per_point` 必须每帧给，否则 `set_pixels_per_point` 会被下一帧覆盖。
+
+### 3.1 上游跳到 v0.23.1 时踩到的
+
+从 v0.16.0 基线跨到 v0.23.1（6136 个提交），编译层面只有两处真的会挡路：
+
+1. **`eframe` 从可选变回硬依赖**。新版把它当无条件依赖，`eframe::Frame` 也不再带
+   `#[cfg(feature = "eframe")]`。鸿蒙没法编 winit，只能把可选特性加回去（见上）。
+2. **`raw_input_hook` 从固有方法降级成 trait 方法**。独立宿主够不到，只能拆出
+   `raw_input_frame` 让两边共用同一份实现。
+
+顺带把「Ctrl + 滚轮 = 缩放」从 `ui-egui` 挪进宿主：新版 `wheel_nav::classify` 里
+`Ctrl` 仍被当成横向滚动，而宿主本来就自己构造 `Event::MouseWheel`，
+在那一处把修饰键改成 `Alt` 更省事，也不用再改上游共享代码。
+
+`craft-libs` 的外部依赖同期从 5 个涨到 15 个（`craft-ui`、`craft-print`、`craft-heif`、
+`craft-pdf`、`craft-jpeg`、`craft-pcraft-format` 等），全部钉在 git rev 上；
+它们都能编到 `aarch64-unknown-linux-ohos`，但首次构建要联网取一次，之后才能 `--offline`。
 
 ## 4. 输入桥
 
@@ -195,9 +225,9 @@ egui 把 `MouseWheel.delta` 当作内容方向的点位移（向上为正），�
 所以是「跳」而不是「滑」；而且那个公式假设 `delta` 是点，遇到按「行」上报的宿主时
 一格只有 ×1.0002。
 
-修法：`ctrl_wheel_to_alt` **只改写修饰键** —— `Ctrl` + 滚轮当作 `Alt` + 滚轮读，
-剩下交给既有的分类逻辑：一档 ×1.1、方向与桌面版一致、同样走缓动。
-滚轮只有一套策略，改一处即可。桌面端不受影响（这条只有独立宿主会调）。
+修法：**只改写修饰键** —— 宿主把轴事件转成 `Event::MouseWheel` 时，把 `Ctrl` + 滚轮改成
+`Alt` + 滚轮，剩下交给既有的分类逻辑：一档 ×1.1、方向与桌面版一致、同样走缓动。
+滚轮只有一套策略，改一处即可。桌面端不受影响（这条只有独立宿主会走）。
 
 ## 5.4 双指捏合
 

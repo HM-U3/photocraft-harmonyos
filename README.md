@@ -103,8 +103,9 @@ cp target/aarch64-unknown-linux-ohos/release/libphotocraft_native.so \
 移植改动集中在三处，细节与已知坑见 [`tools/build_engine_native/README.md`](tools/build_engine_native/README.md)：
 
 1. 新增 `apps/photocraft-ohos` —— NAPI 宿主：渲染线程、事件队列、系统能力请求队列。
-2. `crates/ui-egui` 可脱离 `eframe` 编译 —— 所有 `eframe::Frame` 依赖收进 `#[cfg(feature = "eframe")]`，
-   于是界面能在自己的线程里由宿主驱动 `run_ui`。
+2. `crates/ui-egui` 可脱离 `eframe` 编译 —— `eframe` 变回可选特性；关掉后 crate 把
+   `egui-wgpu` / `wgpu` 以 `eframe` 之名再导出，渲染代码的路径不用改，`eframe::App` 那层
+   由宿主的 `raw_input_frame` / `logic_frame` / `ui_frame` 直接驱动。
 3. 字体与文件后端 —— 宿主把系统 CJK 字体注册为最低优先级回退；文件对话框改由 ArkTS 代理。
 
 #### 想在模拟器里跑（x86_64）
