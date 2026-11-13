@@ -1,4 +1,5 @@
 # 照片工坊 · PhotoCraft for HarmonyOS
+# 本程序完全由AI移植。个人测试，难免存在疏漏，敬请谅解。
 
 [PhotoCraft](https://github.com/storytold/photocraft) 是开源的桌面图像编辑器（Rust + egui + wgpu）。
 这是它的鸿蒙原生移植：引擎交叉编译成 `.so`，跑在 XComponent 的 surface 上，界面由引擎自己绘制 ——
