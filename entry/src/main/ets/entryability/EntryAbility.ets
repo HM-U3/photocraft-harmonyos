@@ -61,6 +61,24 @@ export default class EntryAbility extends UIAbility {
         resolve();
       }, 1500);
     });
+    // 只 maximize 的话窗口会铺满、但内容仍给系统栏留位置（surface 2080 里只有 1934），
+    // 状态栏与导航条也照旧画在最上层。这里两步补齐：
+    //   setWindowLayoutFullScreen —— 布局层铺到系统栏底下；
+    //   setWindowSystemBarEnable([]) —— 把状态栏与导航条本身隐藏。
+    // 后者标称对 2in1 不可用（编译期一条告警，桌面本来也没有状态栏，走 maximize 的
+    // 沉浸式即可），在平板形态上实测有效；PC 上调它报的错被 catch 吞掉。
+    try {
+      await win.setWindowLayoutFullScreen(true);
+    } catch (err) {
+      const e = err as BusinessError;
+      console.warn('[PhotoCraft] 布局全屏失败(忽略) code=' + e.code);
+    }
+    try {
+      await win.setWindowSystemBarEnable([]);
+    } catch (err) {
+      const e = err as BusinessError;
+      console.warn('[PhotoCraft] 隐藏系统栏失败(忽略) code=' + e.code);
+    }
     try {
       await Promise.race([win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE), timeout]);
       const rect: window.Rect = win.getWindowProperties().windowRect;

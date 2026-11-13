@@ -350,7 +350,6 @@ struct NativeRender {
     }
     this.lastAxisKey = key;
     // 滚轮上报的是角度（向前为负），egui 期望点：约 40pt/notch、1 notch ≈ 15°
-    console.info('[PhotoCraft] axis action=' + event.action + ' dx=' + dx + ' dy=' + dy + ' ctrl=' + this.ctrlDown);
     try {
       native.wheel(dx * 2.6, dy * 2.6, this.ctrlDown, this.shiftDown, this.altDown);
     } catch (err) {

@@ -105,8 +105,30 @@ onWindowStageCreate(stage) {
 `prepareFullScreen` 里调的是 `win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE)`
 —— 新版 SDK 已经删掉了 `WindowMode` / `setWindowMode`，全屏只剩这一条路。`ENTER_IMMERSIVE`
 会连标题栏和 Dock 一起收起来，光标移到屏幕顶边才浮出来，留一个还原/关闭的出口。
-手机 / 平板上系统本来就只有全屏，这个调用报 `801`（能力不支持），`catch` 掉即可。
+一部分形态（如手机、部分 PC 模式）上调它会报 `801`（能力不支持），`catch` 掉即可。
 外面还套了 1.5 s 超时兜底：真机上万一 `maximize` 的 Promise 迟迟不回，页面也不能不加载。
+
+**只调 `maximize` 并不等于「看不见系统栏」。** 2.2.1 在 MatePad Edge 上实测：`maximize`
+回来后 `windowRect` 确实是 `3120x2080`（整屏），但 `XComponent` 的 surface 只有 `3120x1934`
+—— 差的 146 px 正好是状态栏高度，也就是窗口铺满了、布局却仍然在给系统栏让位，状态栏和底部
+导航条照旧画在最上层。补两步才彻底：
+
+```ts
+await win.setWindowLayoutFullScreen(true);   // 布局层铺到系统栏底下
+await win.setWindowSystemBarEnable([]);      // 再把状态栏、导航条本身隐藏
+await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE);
+```
+
+两步都放在 `maximize` **之前**，等它们落定再 `loadContent`，surface 一创建就是 `3120x2080`。
+几条实测结论：
+
+- 只加 `setWindowLayoutFullScreen(true)` 不够：surface 会变 `3120x2080`，但状态栏仍然绘制在
+  内容之上（时间、电量压在菜单栏左边），底部导航条也在。
+- 换成 `setSpecificSystemBarEnabled('status'|'navigation', false)` 也不行：状态栏没了，底部
+  导航条的横线还在，而且编译期同样报两条「unavailable to 2in1」。
+- `setWindowSystemBarEnable([])` 是唯一两步都干净的写法，代价是一条编译告警
+  （`WindowManager.Core` 的 syscap 对 2in1 标记为不可用）。桌面形态本来就没有状态栏，
+  走 `maximize` 的沉浸式即可，真报错会被 `catch` 吞掉。
 
 为什么不能「先加载、再切全屏」：surface 的尺寸在创建那一刻就定了（§2.1），
 先按默认小窗加载就必然要经历一次「小 surface → resize 撑大」，
