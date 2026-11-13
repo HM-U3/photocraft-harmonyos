@@ -6,6 +6,28 @@ import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 /**
+ * 轴事件（滚轮）用到的最小接口。
+ *
+ * `AxisEvent` / `AxisAction` 都是 API 17 才引入的类型，而本应用要能装到 HarmonyOS 5.0
+ * （API 12）的机器上。这里只声明实际读的字段，动作值用 `AxisAction` 的数值镜像：
+ * 老系统上这些属性不存在，读出来是 undefined，比较一律不成立，等同于「没有滚轮」，
+ * 不会抛异常。
+ */
+interface AxisEventCompat {
+  action: number;
+  timestamp: number;
+  getVerticalAxisValue(): number;
+  getHorizontalAxisValue(): number;
+}
+
+/** `AxisAction` 的数值镜像：0 BEGIN / 1 UPDATE / 2 END / 3 CANCEL。 */
+const AXIS_BEGIN: number = 0;
+const AXIS_UPDATE: number = 1;
+const AXIS_END: number = 2;
+const AXIS_CANCEL: number = 3;
+
+
+/**
  * 原生渲染页：不加载 WebView，Rust 通过 wgpu(GLES/EGL) 直接渲染到 XComponent。
  *
  * 这一层只做「系统能力代理」：
@@ -107,10 +129,15 @@ struct NativeRender {
    * 而引擎在 Unix 上靠 LANGUAGE/LC_ALL/LANG 环境变量判断系统语言 —— 鸿蒙应用进程里
    * 这些变量是空的，`auto` 就会一路落到英文。引擎已支持 PHOTOCRAFT_LOCALE 覆盖，
    * 这里在渲染线程起来之前把系统的 BCP 47 标签（如 `zh-Hans-CN`）传下去。
+   *
+   * 取标签用 `getPreferredLanguageList()`（API 9）：它给完整标签，分得出简繁；
+   * `getSystemLocale()` 自 API 20 起已被 `getSystemLocaleInstance()` 取代，
+   * 而 `getSystemLanguage()` 只到语种（`zh`），繁体会被当成简体。
    */
   private ensureLocale(): void {
     try {
-      const tag: string = i18n.System.getSystemLocale();
+      const preferred: string[] = i18n.System.getPreferredLanguageList();
+      const tag: string = preferred.length > 0 ? preferred[0] : i18n.System.getSystemLanguage();
       if (tag.length > 0) {
         native.setLocale(tag);
       }
@@ -280,13 +307,15 @@ struct NativeRender {
     }
   }
 
-  private onWheel(event: AxisEvent): void {
+  private onWheel(raw: AxisEvent): void {
     if (this.status.length > 0) {
       return;
     }
+    // 见 AxisEventCompat：只碰这些字段，免得在 API 12~16 的系统上引用不存在的成员。
+    const event: AxisEventCompat = raw as object as AxisEventCompat;
     // CANCEL 不带数值；END 带：慢速滚动时系统常常只在 END 上报这一段的增量，
     // 早先直接丢掉 END，结果「滚一格」完全没反应，只有快速连滚（UPDATE 连续上报）才动。
-    if (event.action === AxisAction.CANCEL) {
+    if (event.action === AXIS_CANCEL) {
       return;
     }
     let dx: number = 0;
@@ -301,14 +330,14 @@ struct NativeRender {
     // 一次滚动 = BEGIN … UPDATE … END。数值可能只出现在 UPDATE 上，也可能只在 END 上
     // （慢速滚动时系统就只在段尾报一次）。已经报过数值的段里，END 若重复同一个数值就跳过，
     // 免得一格算两次；整段没有任何数值时，END 的那一下就是全部。
-    if (event.action === AxisAction.BEGIN) {
+    if (event.action === AXIS_BEGIN) {
       this.gestureHadValue = false;
     }
     const hasValue: boolean = dx !== 0 || dy !== 0;
-    if (hasValue && event.action === AxisAction.UPDATE) {
+    if (hasValue && event.action === AXIS_UPDATE) {
       this.gestureHadValue = true;
     }
-    if (hasValue && event.action === AxisAction.END && this.gestureHadValue) {
+    if (hasValue && event.action === AXIS_END && this.gestureHadValue) {
       return;
     }
     if (!hasValue) {
@@ -321,6 +350,7 @@ struct NativeRender {
     }
     this.lastAxisKey = key;
     // 滚轮上报的是角度（向前为负），egui 期望点：约 40pt/notch、1 notch ≈ 15°
+    console.info('[PhotoCraft] axis action=' + event.action + ' dx=' + dx + ' dy=' + dy + ' ctrl=' + this.ctrlDown);
     try {
       native.wheel(dx * 2.6, dy * 2.6, this.ctrlDown, this.shiftDown, this.altDown);
     } catch (err) {
@@ -388,6 +418,14 @@ struct NativeRender {
     }
   }
 
+  /**
+   * 宿主 Context。`getContext(this)` 自 API 12 起弃用，改从 UIContext 取；
+   * picker 之类的系统能力仍然要一个真正的 Context。
+   */
+  private hostContext(): common.UIAbilityContext | undefined {
+    return this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+  }
+
   /** 菜单「文件 → 打开」：系统选择器 → 读字节 → 交给编辑器。 */
   private async pickOpen(): Promise<void> {
     if (this.busy) {
@@ -395,7 +433,12 @@ struct NativeRender {
     }
     this.busy = true;
     try {
-      const viewPicker = new picker.DocumentViewPicker(getContext(this));
+      const ctx = this.hostContext();
+      if (!ctx) {
+        console.error('[PhotoCraft] 打开文件：拿不到宿主 Context');
+        return;
+      }
+      const viewPicker = new picker.DocumentViewPicker(ctx);
       const uris: string[] = await viewPicker.select({
         maxSelectNumber: 1,
         fileSuffixFilters: ['.png', '.jpg', '.jpeg', '.webp', '.psd', '.tif', '.tiff', '.gif', '.bmp']
@@ -436,7 +479,12 @@ struct NativeRender {
 
       let uri: string = this.savedTo.get(name) ?? '';
       if (uri.length === 0) {
-        const viewPicker = new picker.DocumentViewPicker(getContext(this));
+        const ctx = this.hostContext();
+        if (!ctx) {
+          console.error('[PhotoCraft] 存储为：拿不到宿主 Context');
+          return;
+        }
+        const viewPicker = new picker.DocumentViewPicker(ctx);
         const uris: string[] = await viewPicker.save({ newFileNames: [name] });
         if (uris.length === 0) {
           return;

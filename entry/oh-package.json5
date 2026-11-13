@@ -5,5 +5,9 @@
   "main": "",
   "author": "",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    // 原生引擎的类型声明。没有它 hvigor 会告警「module for 'libphotocraft_native.so'
+    // is not verified」，导入的 native.* 也全是 any，改错名字编译期发现不了。
+    "libphotocraft_native.so": "file:./src/main/cpp/types/libphotocraft_native"
+  }
 }

@@ -1,6 +1,6 @@
 # 技术笔记（2.0 原生移植）
 
-面向要改代码或提 issue 的人。README 讲怎么用，这份讲为什么这么写、以及踩过的坑。
+面向要改代码或提 issue 的人：为什么这么写，以及踩过的坑。
 
 1.x（WebAssembly + ArkWeb）时期的笔记归档在 [`notes-1.x-webassembly.md`](notes-1.x-webassembly.md)。
 
@@ -379,3 +379,36 @@ HDC="D:/DevEco Studio/sdk/default/openharmony/toolchains/hdc.exe"
 | 设备锁屏 | `aa start` 会被拒（`10106102 screen is locked`），需手动解锁 |
 | 追踪耗时 | 上游的 `Perf` 计时在非桌面平台上多为 0 值桩，真机诊断用「工作类型」而不是耗时 |
 | `hilog -x` 输出 | 单行可能极长且带 `\0`，直接 `grep` 会漏；先 `tr -d '\0'` |
+
+## 10. API 版本：target 26，兼容下限仍是 12
+
+`build-profile.json5` 现在是 `compileSdkVersion 26.0.0` / `targetSdkVersion 26.0.0` /
+`compatibleSdkVersion 5.0.0(12)`。两个数字分开的原因：
+
+- `targetSdkVersion` 是**系统的前向兼容开关**。做过版本隔离的行为变更只对
+  `targetSdkVersion ≥ 变更版本` 的应用生效；不升就会一直跑在旧行为上，早晚被系统更新搞坏。
+- `compatibleSdkVersion` 决定**能装在哪**。2in1 用户里还有一批 HarmonyOS 5.0 的机器，
+  降到 18 或 23 就等于把它们排除在外。
+
+代价是：任何比 12 新的 API 都会在编译期得到一条
+`The 'xxx' API is supported since SDK version N` 的告警。官方推荐的消音写法是
+`deviceInfo.apiAvailable('N.0.0')`，但**它自己就是 API 26 才有的**（`@ohos.deviceInfo`
+@since 26.0.0），在 12~25 的设备上调它就是崩，所以只在 target ≥ 26 时能无条件用。
+
+本工程的处置：
+
+| 位置 | 做法 |
+|---|---|
+| 轴事件（滚轮） | `AxisEvent` / `AxisAction` 是 API 17 的类型，改成自己声明的最小接口 `AxisEventCompat` + `AxisAction` 的数值镜像（0/1/2/3）。老系统上这些属性读到 `undefined`，比较不成立，等于「没有滚轮」，不抛异常 |
+| `getSystemLocale()` | 自 API 20 弃用（`getSystemLocaleInstance()` 取代）。改用 **API 9 的** `getPreferredLanguageList()[0]`：给的是完整标签（`zh-Hans-CN`），还分得清简繁；`getSystemLanguage()` 只到 `zh`，繁体会被当成简体 |
+| `getContext(this)` | 已弃用，改 `this.getUIContext().getHostContext()`（见 `hostContext()`） |
+| `Circle().fill()` | SDK 26 把 `Circle.fill` 的声明换成了 `ResourceColor \| ColorMetrics`（@since 26.0.0），兼容 12 的工程里一直告警。隐私页那颗 4×4 圆点改成 `Row` + `borderRadius` + `backgroundColor`，效果一样 |
+| 原生库导入 | 补 `entry/src/main/cpp/types/libphotocraft_native/{index.d.ts,oh-package.json5}`，并在 `entry/oh-package.json5` 里以本地依赖引入。之后 `native.*` 有类型，改错名字编译期就报错；否则导入是 `any`，且 hvigor 每次提示「module ... is not verified」 |
+
+**仍剩 2 条告警**：`XComponent.onAxisEvent` 本身是 API 17 的属性方法。属性方法没法用
+`if` 条件挂载（要么走 `AttributeModifier` 把整段逻辑包起来，要么接受告警），而
+`apiAvailable` 又只在 26+ 存在 —— 在兼容 12 的前提下这两条无法消除。API 12~16 的设备上
+滚轮本来就不生效（系统不派发轴事件），代码里的 try/catch 与数值判断已经兜住了。
+
+新增本地类型依赖后要跑一次 `ohpm install --all`，否则 `entry/oh_modules` 是空的、
+声明不会生效（hvigor 不会自动装 file: 依赖）。

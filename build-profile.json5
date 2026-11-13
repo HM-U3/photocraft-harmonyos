@@ -7,8 +7,12 @@
     "products": [
       {
         "name": "default",
+        // API 26 起是纯版本号字符串；compileSdk 显式钉住，免得换 DevEco 版本时悄悄跳。
+        "compileSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        // 兼容下限故意留在 5.0.0(12)：2in1 用户里还有一批 HarmonyOS 5 的机器，
+        // 用到 12 之后新增的 API 时用 deviceInfo.sdkApiVersion 守卫（见 docs/technical-notes.md §10）。
         "compatibleSdkVersion": "5.0.0(12)",
-        "targetSdkVersion": "6.1.0(23)",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
           "strictMode": {

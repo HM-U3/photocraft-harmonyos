@@ -148,10 +148,14 @@ struct Privacy {
         .margin({ bottom: 10 })
       ForEach(lines, (line: string) => {
         Row() {
-          Circle()
+          // 4×4 的圆点。原先用 Circle().fill()，但 SDK 26 把 Circle.fill 的声明换成了
+          // `ResourceColor | ColorMetrics`（@since 26.0.0），在兼容下限 12 的工程里会一直告警；
+          // 一个纯色小方块加圆角，效果一样，且只用到 API 7 的属性。
+          Row()
             .width(4)
             .height(4)
-            .fill($r('app.color.accent'))
+            .borderRadius(2)
+            .backgroundColor($r('app.color.accent'))
             .margin({ top: 8 })
           Text(line)
             .fontSize(13)

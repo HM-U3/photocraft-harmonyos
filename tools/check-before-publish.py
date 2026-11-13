@@ -78,7 +78,7 @@ def main() -> int:
     for f, ln, name, snippet in hits:
         print("  %s:%d  [%s]" % (f, ln, name))
         print("      %s" % snippet)
-    print("\n处理办法见 README「开源前自查」。")
+    print("\n处理办法：把上面命中的内容换成占位符或从工作区移除后再提交。")
     return 1
 
 
